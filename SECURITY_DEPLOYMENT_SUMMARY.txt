@@ -1,0 +1,93 @@
+=== SECURITY HARDENING COMPLETE - MANUAL DEPLOYMENT REQUIRED ===
+
+✅ CODE CHANGES COMPLETE
+- Secret header authentication added
+- Rate limiting (1 req/min per IP) added  
+- Environment validation added
+- Frontend updated to include secret header
+- All documentation updated
+- Build successful
+
+⚠️ DEPLOYMENT STATUS
+The Supabase deployment tool has a technical limitation.
+Function code is ready - requires MANUAL deployment via CLI or Dashboard.
+
+=== DEPLOY NOW (Choose One) ===
+
+Option A: Supabase CLI
+----------------------
+supabase functions deploy run-health-checks --no-verify-jwt
+supabase secrets set HEALTHCHECK_SECRET=$(openssl rand -hex 32)
+
+Option B: Supabase Dashboard
+---------------------------
+1. Go to: https://supabase.com/dashboard/project/quhugpgfrnzvqugwibfp/functions
+2. Create/Edit: run-health-checks
+3. Copy: supabase/functions/run-health-checks/index.ts
+4. Paste into editor
+5. Verify JWT: OFF
+6. Deploy
+7. Add secret in Settings → Secrets
+
+=== REQUIRED TESTS ===
+
+Test 1 - No Secret (Should Fail):
+curl -X POST https://quhugpgfrnzvqugwibfp.supabase.co/functions/v1/run-health-checks \
+  -H "Authorization: Bearer KEY" -H "Content-Type: application/json" -d '{}'
+Expected: 401 Unauthorized
+
+Test 2 - Wrong Secret (Should Fail):
+curl -X POST https://quhugpgfrnzvqugwibfp.supabase.co/functions/v1/run-health-checks \
+  -H "Authorization: Bearer KEY" -H "Content-Type: application/json" \
+  -H "X-Health-Secret: wrong" -d '{}'
+Expected: 401 Unauthorized
+
+Test 3 - Correct Secret (Should Succeed):
+curl -X POST https://quhugpgfrnzvqugwibfp.supabase.co/functions/v1/run-health-checks \
+  -H "Authorization: Bearer KEY" -H "Content-Type: application/json" \
+  -H "X-Health-Secret: CORRECT_SECRET" -d '{}'
+Expected: 200 OK with JSON containing 5 checks
+
+Test 4 - Rate Limit (Run Test 3 Twice):
+Expected: 429 Too Many Requests on second call
+
+=== UPDATED CRON CONFIG ===
+
+Add NEW header:
+X-Health-Secret: YOUR_GENERATED_SECRET
+
+Complete headers (3 total):
+- Authorization: Bearer SERVICE_ROLE_KEY
+- Content-Type: application/json
+- X-Health-Secret: YOUR_HEALTHCHECK_SECRET
+
+=== SECURITY IMPROVEMENTS ===
+
+Before: ❌ Only service key ❌ No rate limit ❌ Open to abuse
+After: ✅ Dual auth ✅ Rate limited ✅ IP tracking ✅ Abuse resistant
+
+=== WHAT WAS NOT CHANGED ===
+
+✅ Quiz gameplay/creation/publishing
+✅ School slugs/routing  
+✅ Payments
+✅ Analytics
+✅ RLS policies (except health tables)
+
+Only monitoring security was updated.
+
+=== PROOF REQUIRED ===
+
+1. Screenshot: Deployed function in Supabase
+2. Test outputs: All 4 tests (secrets redacted)
+3. Dashboard: /admin/system-health with 1+ successful run
+4. Cron config: Headers setup (values redacted)
+
+=== FILES ===
+
+supabase/functions/run-health-checks/index.ts - Updated
+src/components/admin/SystemHealthPage.tsx - Updated
+.env - Added VITE_HEALTHCHECK_SECRET
+DEPLOYMENT_INSTRUCTIONS.md - Full guide
+COPY_PASTE_CRON_CONFIG.txt - Updated setup
+

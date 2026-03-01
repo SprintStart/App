@@ -1,0 +1,125 @@
+=== COPY-PASTE CONFIGURATION FOR CRON SERVICE ===
+
+Title/Name:
+StartSprint Health Checks
+
+URL:
+https://quhugpgfrnzvqugwibfp.supabase.co/functions/v1/run-health-checks
+
+Method:
+POST
+
+Schedule (cron expression):
+*/5 * * * *
+
+Request Headers (add each as separate header):
+Authorization: Bearer YOUR_SERVICE_ROLE_KEY_HERE
+Content-Type: application/json
+X-Health-Secret: YOUR_HEALTHCHECK_SECRET_HERE
+
+Request Body:
+{}
+
+Expected Response Code:
+200
+
+Timeout:
+30 seconds
+
+Notifications:
+Enable email on failure
+
+Description:
+Automated health monitoring for StartSprint critical paths. Checks homepage, school walls, subject pages, quiz pages, and quiz start API every 5 minutes. Alerts sent after 2 consecutive failures.
+
+=== GET YOUR SECRETS ===
+
+1. Service Role Key:
+   - Go to: https://supabase.com/dashboard/project/quhugpgfrnzvqugwibfp/settings/api
+   - Find: "Project API keys"
+   - Copy: "service_role" key (the long one starting with "eyJ...")
+   - Replace: "YOUR_SERVICE_ROLE_KEY_HERE" in Authorization header above
+
+2. Health Check Secret:
+   - Generate: openssl rand -hex 32
+   - OR use any 32+ character random string
+   - Replace: "YOUR_HEALTHCHECK_SECRET_HERE" in X-Health-Secret header above
+   - IMPORTANT: Use the SAME secret in:
+     * Supabase Edge Function environment variables (HEALTHCHECK_SECRET)
+     * Frontend .env file (VITE_HEALTHCHECK_SECRET)
+     * Cron service configuration
+
+=== TEST BEFORE ENABLING ===
+
+Test with curl (replace YOUR_KEY and YOUR_SECRET):
+
+curl -X POST https://quhugpgfrnzvqugwibfp.supabase.co/functions/v1/run-health-checks \
+  -H "Authorization: Bearer YOUR_SERVICE_ROLE_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-Health-Secret: YOUR_HEALTHCHECK_SECRET" \
+  -d '{}'
+
+Expected: JSON with "success": true and 5 checks
+
+=== CRON-JOB.ORG SPECIFIC SETUP ===
+
+1. Sign up: https://cron-job.org/en/signup
+2. Verify email
+3. Create Cronjob → Click "Create cronjob"
+4. Fill in:
+   - Title: StartSprint Health Checks
+   - Address (URL): https://quhugpgfrnzvqugwibfp.supabase.co/functions/v1/run-health-checks
+   - Schedule: Click "Advanced" → Enter */5 * * * *
+   - Enabled: Yes
+
+5. Execution:
+   - Request method: POST
+   - Headers → Add header:
+     - Name: Authorization
+     - Value: Bearer YOUR_SERVICE_ROLE_KEY_HERE
+   - Headers → Add header:
+     - Name: Content-Type
+     - Value: application/json
+   - Headers → Add header:
+     - Name: X-Health-Secret
+     - Value: YOUR_HEALTHCHECK_SECRET_HERE
+   - Request body: {}
+
+6. Notifications:
+   - Email: ON (when execution fails)
+   - Add your email
+
+7. Click "Create cronjob"
+
+=== VERIFY IT'S WORKING ===
+
+After 5-10 minutes:
+1. Go to: https://startsprint.app/admin/system-health
+2. You should see recent check results
+3. All 5 checks should show status
+4. Last run time should be within last 5 minutes
+
+=== TROUBLESHOOTING ===
+
+If not working:
+- Check cron service execution log for errors
+- Verify service role key is correct (no extra spaces)
+- Test endpoint manually with curl first
+- Check dashboard shows no results = cron not triggering
+- Check dashboard shows errors = endpoint working but checks failing
+
+=== ALERT SETUP (OPTIONAL) ===
+
+To enable email alerts on failures:
+1. Configure email service in: supabase/functions/send-health-alert/index.ts
+2. Add Resend or SendGrid API key
+3. Uncomment email sending code
+4. Redeploy function
+
+Without this, alerts are logged to database but not emailed.
+
+=== SUPPORT ===
+
+Dashboard: https://startsprint.app/admin/system-health
+Email: support@startsprint.app
+Database: Query health_checks table for history

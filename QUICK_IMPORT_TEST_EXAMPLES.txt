@@ -1,0 +1,310 @@
+# QUICK IMPORT TEST EXAMPLES
+# Copy and paste these into the Quick Import field to test all supported formats
+
+# ========================================
+# TEST 1: Format A - Strict (with "Question:" and "Answer:")
+# ========================================
+
+MCQ
+Question: What is revenue?
+A) Profit
+B) Sales income
+C) Costs
+D) Tax
+Answer: B
+
+# Expected: 1 question added ✅
+
+
+# ========================================
+# TEST 2: Format B - No "Question:" prefix with checkmark
+# ========================================
+
+MCQ
+What is profit?
+A. Revenue minus costs ✅
+B. Total sales
+C. Cash in bank
+D. None of the above
+
+# Expected: 1 question added ✅
+
+
+# ========================================
+# TEST 3: Format C - Inline answers for True/False
+# ========================================
+
+True/False
+A sole trader has unlimited liability. (T)
+
+# Expected: 1 question added ✅
+
+
+# ========================================
+# TEST 4: Format C - Inline answers for Yes/No
+# ========================================
+
+Yes/No
+Is cash flow the same as profit? (No)
+
+# Expected: 1 question added ✅
+
+
+# ========================================
+# TEST 5: Format C - Answer line for True/False
+# ========================================
+
+True/False
+Assets = Liabilities + Equity
+Answer: True
+
+# Expected: 1 question added ✅
+
+
+# ========================================
+# TEST 6: Format D - Multi-Question MCQ Block
+# ========================================
+
+MCQ
+What is 2+2?
+A: 3
+B: 4 ✅
+C: 5
+
+What is 3+3?
+A- 5
+B- 6 (Correct)
+C- 7
+D- 8
+
+Question 3: What is 4+4?
+A. 7
+B. 8 ✅
+C. 9
+
+# Expected: 3 questions added ✅
+
+
+# ========================================
+# TEST 7: Mixed Formats (All Types)
+# ========================================
+
+MCQ
+What is profit?
+A) Revenue minus costs
+B) Total sales
+C) Cash in bank
+Answer: A
+
+True/False
+A sole trader has unlimited liability. (T)
+
+Yes/No
+Is cash flow the same as profit?
+Answer: No
+
+MCQ
+What is revenue?
+A. Profit
+B. Sales income ✅
+C. Costs
+
+# Expected: 4 questions added ✅
+
+
+# ========================================
+# TEST 8: Alternative Option Formats
+# ========================================
+
+MCQ
+Which is correct?
+A) Option with parenthesis ✅
+B) Another option
+
+MCQ
+Which is correct?
+A. Option with period (Correct)
+B. Another option
+
+MCQ
+Which is correct?
+A: Option with colon
+B: Another option
+Answer: B
+
+MCQ
+Which is correct?
+A- Option with dash
+B- Another option **correct**
+C- Third option
+
+# Expected: 4 questions added ✅
+
+
+# ========================================
+# TEST 9: ERROR - Missing Answer
+# ========================================
+
+MCQ
+What is revenue?
+A. Profit
+B. Sales income
+C. Costs
+
+# Expected:
+# - 0 questions added ❌
+# - Error: "Line 2: No correct answer marked. Use ✅, (Correct), or 'Answer: B'"
+# - Template shown
+
+
+# ========================================
+# TEST 10: ERROR - Insufficient Options
+# ========================================
+
+MCQ
+What is 2+2?
+A. 4 ✅
+
+# Expected:
+# - 0 questions added ❌
+# - Error: "Line 2: MCQ must have at least 2 options"
+# - Template shown
+
+
+# ========================================
+# TEST 11: Partial Success
+# ========================================
+
+MCQ
+Good question 1?
+A. Option 1 ✅
+B. Option 2
+C. Option 3
+
+MCQ
+Bad question (missing answer)?
+A. Option 1
+B. Option 2
+
+MCQ
+Good question 2?
+A. Option 1
+B. Option 2 (Correct)
+
+# Expected:
+# - 2 questions added ✅
+# - 1 error: "Line 8: No correct answer marked..."
+# - Toast: "Added 2 question(s). 1 question(s) need fixes."
+
+
+# ========================================
+# TEST 12: Numbering and "Question:" prefix (Optional)
+# ========================================
+
+MCQ
+1) What is profit?
+A. Revenue minus costs ✅
+B. Total sales
+
+MCQ
+2. What is revenue?
+A. Sales income ✅
+B. Costs
+
+MCQ
+Question 3: What is cash flow?
+A. Money in and out ✅
+B. Profit
+
+# Expected: 3 questions added ✅
+
+
+# ========================================
+# TEST 13: True/False Variations
+# ========================================
+
+True/False
+Statement 1. (T)
+
+T/F
+Statement 2. (False)
+
+TRUE_FALSE
+Statement 3.
+Answer: F
+
+# Expected: 3 questions added ✅
+
+
+# ========================================
+# TEST 14: Yes/No Variations
+# ========================================
+
+Yes/No
+Question 1? (Yes)
+
+Y/N
+Question 2? (N)
+
+YES_NO
+Question 3?
+Answer: Y
+
+# Expected: 3 questions added ✅
+
+
+# ========================================
+# TEST 15: Real-World Business Example
+# ========================================
+
+MCQ
+What is the accounting equation?
+A. Revenue - Costs = Profit ✅
+B. Assets + Liabilities = Equity
+C. Cash In - Cash Out = Profit
+D. Sales - Returns = Revenue
+
+MCQ
+What is a sole trader?
+A) A business owned by one person ✅
+B) A business owned by shareholders
+C) A business owned by partners
+D) A government organization
+
+True/False
+A sole trader has unlimited liability. (T)
+
+True/False
+A limited company has unlimited liability.
+Answer: False
+
+Yes/No
+Is cash flow the same as profit? (No)
+
+Yes/No
+Can a business be profitable but have negative cash flow?
+Answer: Yes
+
+# Expected: 6 questions added ✅
+
+
+# ========================================
+# INSTRUCTIONS FOR TESTING
+# ========================================
+
+# 1. Copy one test block at a time (without the # comments)
+# 2. Navigate to: Teacher Dashboard → Create Quiz → Step 4: Add Questions → Manual tab
+# 3. Click "Quick Import (Copy & Paste)"
+# 4. Paste the test block
+# 5. Click "Parse & Add Questions"
+# 6. Verify the expected result matches actual result
+
+# If you see errors, they should:
+# - Include line numbers
+# - Show specific reasons
+# - Offer an expandable template with examples
+
+# If you see partial success:
+# - Valid questions should be added to the quiz
+# - Invalid questions should show errors
+# - Toast should say "Added X question(s). Y question(s) need fixes."

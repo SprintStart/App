@@ -1,0 +1,17 @@
+# Static fallback OG image (no sessionId = fallback PNG)
+/og-default.png   https://quhupggfrnzvqugwibfp.supabase.co/functions/v1/og-result    200
+
+# API routes for OG images
+/api/og/result    https://quhupggfrnzvqugwibfp.supabase.co/functions/v1/og-result    200
+/api/og/*         https://quhupggfrnzvqugwibfp.supabase.co/functions/v1/:splat    200
+
+# Share page server-side rendering for social crawlers
+/share/session/*  https://quhupggfrnzvqugwibfp.supabase.co/functions/v1/share-page?sessionId=:splat  200  User-Agent:*bot*
+/share/session/*  https://quhupggfrnzvqugwibfp.supabase.co/functions/v1/share-page?sessionId=:splat  200  User-Agent:*crawler*
+/share/session/*  https://quhupggfrnzvqugwibfp.supabase.co/functions/v1/share-page?sessionId=:splat  200  User-Agent:*spider*
+/share/session/*  https://quhupggfrnzvqugwibfp.supabase.co/functions/v1/share-page?sessionId=:splat  200  User-Agent:*facebook*
+/share/session/*  https://quhupggfrnzvqugwibfp.supabase.co/functions/v1/share-page?sessionId=:splat  200  User-Agent:*twitter*
+/share/session/*  https://quhupggfrnzvqugwibfp.supabase.co/functions/v1/share-page?sessionId=:splat  200  User-Agent:WhatsApp*
+
+# All other requests go to React app
+/*    /index.html   200

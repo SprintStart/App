@@ -1,0 +1,252 @@
+<!--
+  STARTSPRINT OPEN GRAPH META TAGS REFERENCE
+  This file shows the exact HTML meta tags that will be rendered on each page.
+  Use this for verification and debugging.
+-->
+
+<!-- ============================================ -->
+<!-- HOMEPAGE: https://startsprint.app/ -->
+<!-- ============================================ -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Primary Meta Tags -->
+  <title>StartSprint — Challenge Your Mind</title>
+  <meta name="description" content="Fast, fun quizzes for students. Play solo or in Immersive Mode — and share your score in seconds." />
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://startsprint.app/" />
+  <meta property="og:title" content="StartSprint — Challenge Your Mind" />
+  <meta property="og:description" content="Fast, fun quizzes for students. Play solo or in Immersive Mode — and share your score in seconds." />
+  <meta property="og:image" content="https://YOUR_SUPABASE_URL.supabase.co/functions/v1/generate-og-image?default=true&v=2" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:url" content="https://startsprint.app/" />
+  <meta name="twitter:title" content="StartSprint — Challenge Your Mind" />
+  <meta name="twitter:description" content="Fast, fun quizzes for students. Play solo or in Immersive Mode — and share your score in seconds." />
+  <meta name="twitter:image" content="https://YOUR_SUPABASE_URL.supabase.co/functions/v1/generate-og-image?default=true&v=2" />
+
+  <!-- Canonical -->
+  <link rel="canonical" href="https://startsprint.app/" />
+</head>
+<body>
+  <!-- Page content -->
+</body>
+</html>
+
+
+<!-- ============================================ -->
+<!-- SHARE RESULT PAGE: /share/session/:sessionId -->
+<!-- Example with 75% score, 3/4 correct, 31 seconds, Geography -->
+<!-- ============================================ -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Primary Meta Tags -->
+  <title>I scored 75% on StartSprint 💨</title>
+  <meta name="description" content="3/4 correct • Time: 0:31 • Subject: Geography. Can you beat my score?" />
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://startsprint.app/share/session/abc-123-def-456" />
+  <meta property="og:title" content="I scored 75% on StartSprint 💨" />
+  <meta property="og:description" content="3/4 correct • Time: 0:31 • Subject: Geography. Can you beat my score?" />
+  <meta property="og:image" content="https://YOUR_SUPABASE_URL.supabase.co/functions/v1/generate-og-image?sessionId=abc-123-def-456&v=2" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:url" content="https://startsprint.app/share/session/abc-123-def-456" />
+  <meta name="twitter:title" content="I scored 75% on StartSprint 💨" />
+  <meta name="twitter:description" content="3/4 correct • Time: 0:31 • Subject: Geography. Can you beat my score?" />
+  <meta name="twitter:image" content="https://YOUR_SUPABASE_URL.supabase.co/functions/v1/generate-og-image?sessionId=abc-123-def-456&v=2" />
+
+  <!-- Canonical -->
+  <link rel="canonical" href="https://startsprint.app/share/session/abc-123-def-456" />
+</head>
+<body>
+  <!-- Share result page content -->
+</body>
+</html>
+
+
+<!-- ============================================ -->
+<!-- VERIFICATION CHECKLIST -->
+<!-- ============================================ -->
+
+<!--
+1. FACEBOOK SHARING DEBUGGER
+   URL: https://developers.facebook.com/tools/debug/
+   Test URL: https://startsprint.app/share/session/YOUR_SESSION_ID
+
+   Expected Results:
+   ✓ og:title: "I scored X% on StartSprint 💨"
+   ✓ og:description: "X/Y correct • Time: M:SS • Subject: [name]. Can you beat my score?"
+   ✓ og:image: Shows 1200x630 branded score card
+   ✓ No errors or warnings
+   ✓ Image preview displays correctly
+
+2. WHATSAPP PREVIEW TEST
+   Steps:
+   a) Complete a quiz on StartSprint
+   b) Click "Share Score" button
+   c) Copy the generated URL
+   d) Send in WhatsApp chat
+
+   Expected Preview:
+   ✓ Thumbnail shows StartSprint logo (cyan + orange)
+   ✓ Title: "I scored X% on StartSprint 💨"
+   ✓ Description shows score details
+   ✓ Image is clear and readable
+   ✓ No Bolt references
+
+3. TWITTER CARD VALIDATOR
+   URL: https://cards-dev.twitter.com/validator
+   Test URL: https://startsprint.app/share/session/YOUR_SESSION_ID
+
+   Expected Results:
+   ✓ Card type: summary_large_image
+   ✓ Preview shows score card image
+   ✓ Title and description match
+
+4. LINKEDIN PREVIEW
+   Steps:
+   a) Create a LinkedIn post
+   b) Paste share URL
+   c) Wait for preview to load
+
+   Expected Preview:
+   ✓ Shows score card image
+   ✓ Title and description display
+   ✓ Professional appearance
+
+5. OG IMAGE DIRECT ACCESS
+   Default: https://YOUR_SUPABASE_URL.supabase.co/functions/v1/generate-og-image?default=true&v=2
+   Session: https://YOUR_SUPABASE_URL.supabase.co/functions/v1/generate-og-image?sessionId=YOUR_ID&v=2
+
+   Expected:
+   ✓ Returns SVG image (200 OK)
+   ✓ Content-Type: image/svg+xml
+   ✓ Image displays correctly in browser
+   ✓ Shows StartSprint branding
+   ✓ Dimensions: 1200×630
+
+6. MOBILE TESTING
+   iOS:
+   ✓ iMessage preview shows image
+   ✓ Safari share sheet works
+   ✓ WhatsApp preview displays
+
+   Android:
+   ✓ Chrome share works
+   ✓ WhatsApp preview displays
+   ✓ Telegram preview displays
+-->
+
+
+<!-- ============================================ -->
+<!-- CACHE BUSTING NOTES -->
+<!-- ============================================ -->
+
+<!--
+If social platforms show OLD images after updates:
+
+1. Increment version number:
+   ?v=2 → ?v=3 → ?v=4
+
+2. Update in these files:
+   - src/components/SEOHead.tsx (line ~16)
+   - src/pages/ShareResult.tsx (line ~127)
+
+3. Rebuild: npm run build
+
+4. Force refresh on platforms:
+   - Facebook: Use "Fetch new information" in Sharing Debugger
+   - WhatsApp: Wait 7 days or clear app cache
+   - Twitter: Use Card Validator
+   - LinkedIn: Edit post and re-paste URL
+
+5. Test with new version parameter
+-->
+
+
+<!-- ============================================ -->
+<!-- OG IMAGE SPECIFICATIONS -->
+<!-- ============================================ -->
+
+<!--
+DEFAULT HOMEPAGE IMAGE:
+- Size: 1200×630 pixels
+- Format: SVG
+- Background: Light blue gradient (#E0F2FE to #DBEAFE)
+- Logo: "StartSprint.App" (top-left, cyan + orange)
+- Icon: 🚀 rocket emoji
+- Headline: "Challenge Your Mind"
+- Description: 2-line feature description
+- CTA: Blue button "Start Playing"
+- Cache: 1 hour (3600 seconds)
+
+SESSION SCORE CARD IMAGE:
+- Size: 1200×630 pixels
+- Format: SVG
+- Background: Light blue gradient (#E0F2FE to #DBEAFE)
+- Logo: "StartSprint.App" (top-left, smaller)
+- Icon: 💨 wind emoji
+- Headline: "I scored X% on StartSprint!"
+- Topic: Topic name • Subject
+- Stats Cards: 3 colored boxes
+  * Yellow: Score percentage
+  * Green: Correct/Total
+  * Blue: Time taken
+- CTA: "Can you beat my score? startsprint.app"
+- Cache: Immutable (1 year)
+-->
+
+
+<!-- ============================================ -->
+<!-- TROUBLESHOOTING -->
+<!-- ============================================ -->
+
+<!--
+PROBLEM: WhatsApp shows generic preview
+SOLUTION:
+- Check og:image URL is publicly accessible
+- Verify image returns 200 OK status
+- Ensure image is exactly 1200×630
+- Try incrementing cache version (?v=3)
+
+PROBLEM: Facebook shows old image
+SOLUTION:
+- Use Facebook Sharing Debugger
+- Click "Fetch new information"
+- Increment version parameter
+- Wait a few minutes for CDN refresh
+
+PROBLEM: Image doesn't load
+SOLUTION:
+- Test direct URL in browser
+- Check CORS headers are set
+- Verify edge function is deployed
+- Check for JavaScript errors
+
+PROBLEM: Preview shows wrong score
+SOLUTION:
+- Verify session ID is correct
+- Check session is frozen (completed)
+- Confirm database has score data
+- Test edge function response
+
+PROBLEM: Logo not showing
+SOLUTION:
+- Logo uses SVG text (no external file needed)
+- Check SVG rendering in browser
+- Verify text colors are set
+- Test in different browsers
+-->

@@ -1,0 +1,80 @@
+========================================
+DEPLOY BACKEND VALIDATION - STEP BY STEP
+========================================
+
+STEP 1: Open Supabase Dashboard
+- Go to: https://supabase.com/dashboard
+- Select your project
+- Click "SQL Editor" in left sidebar
+
+STEP 2: Copy SQL
+- Open file: COPY_PASTE_THIS_SQL.sql
+- Select ALL text (Ctrl+A / Cmd+A)
+- Copy (Ctrl+C / Cmd+C)
+
+STEP 3: Paste and Run
+- In Supabase SQL Editor, paste the SQL
+- Click "Run" button (or press Ctrl+Enter)
+- Wait for completion message
+
+STEP 4: Verify Success
+You should see:
+- "Success. No rows returned"
+- NOTICE messages showing:
+  ✓ CHECK constraint: single destination scope
+  ✓ Trigger: validate_quiz_publish()
+  ✓ Minimum 1 question required
+
+STEP 5: Test (Optional)
+Run this test query to verify:
+
+SELECT
+  conname as constraint_name,
+  tgname as trigger_name
+FROM pg_constraint c
+FULL OUTER JOIN pg_trigger t ON true
+WHERE conname = 'check_single_destination_scope'
+   OR tgname = 'trigger_validate_quiz_publish';
+
+You should see both objects.
+
+========================================
+WHAT THIS DOES
+========================================
+
+Prevents publishing invalid quizzes:
+❌ No questions
+❌ Invalid destination
+❌ Empty name/subject
+❌ Deleted school references
+❌ Invalid country/exam codes
+
+All existing flows still work:
+✅ Creating drafts
+✅ Editing questions
+✅ Unpublishing quizzes
+
+========================================
+TROUBLESHOOTING
+========================================
+
+Error: "syntax error"
+→ Make sure you copied the ENTIRE SQL file
+
+Error: "relation does not exist"
+→ Your database schema is missing tables
+→ Check you're on the right project
+
+Success but no NOTICE messages?
+→ That's okay, validation still works
+→ Notices may not display in all environments
+
+========================================
+ROLLBACK (If Needed)
+========================================
+
+If you need to remove the validation:
+
+DROP TRIGGER IF EXISTS trigger_validate_quiz_publish ON question_sets;
+DROP FUNCTION IF EXISTS validate_quiz_publish();
+ALTER TABLE question_sets DROP CONSTRAINT IF EXISTS check_single_destination_scope;

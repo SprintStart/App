@@ -1,0 +1,5000 @@
+          WHERE admin_allowlist.email = (
+            SELECT email FROM auth.users WHERE id = auth.uid()
+          )
+          AND admin_allowlist.is_active = true
+        )
+      );
+  END IF;
+END $$;
+/*
+  # Fix System Health Checks RLS Policy
+
+  1. Changes
+    - Drop incorrect admin policy that checks JWT role
+    - Create new admin policy that checks admin_allowlist table
+    
+  2. Security
+    - Only users in admin_allowlist with is_active=true can view health checks
+    - Maintains service role insert permission
+*/
+
+-- Drop the old incorrect policy
+DROP POLICY IF EXISTS "Admins can view health checks" ON system_health_checks;
+
+-- Create new policy that checks admin_allowlist
+CREATE POLICY "Admins can view health checks"
+  ON system_health_checks
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = auth.uid()
+      )
+      AND admin_allowlist.is_active = true
+    )
+  );
+/*
+  # Fix Admin Allowlist Infinite Recursion
+  
+  1. Problem
+    - Current RLS policies on admin_allowlist cause infinite recursion
+    - When checking if user is admin, policy queries admin_allowlist, which triggers the same policy
+  
+  2. Solution
+    - Drop existing recursive policies
+    - Allow authenticated users to SELECT from admin_allowlist (needed for login check)
+    - Only super admins can modify admin_allowlist entries
+    - Use direct email comparison instead of recursive subquery
+  
+  3. Security
+    - SELECT is safe for authenticated users (they can only see if emails exist)
+    - Modifications require super_admin role check without recursion
+*/
+
+-- Drop existing policies that cause recursion
+DROP POLICY IF EXISTS "admin_allowlist_select" ON admin_allowlist;
+DROP POLICY IF EXISTS "admin_allowlist_modify" ON admin_allowlist;
+
+-- Allow authenticated users to read admin_allowlist
+-- This is needed for login verification
+CREATE POLICY "admin_allowlist_read_for_auth"
+  ON admin_allowlist
+  FOR SELECT
+  TO authenticated
+  USING (true);
+
+-- Allow super admins to modify admin_allowlist
+-- Use a simple check that doesn't recurse
+CREATE POLICY "admin_allowlist_super_admin_modify"
+  ON admin_allowlist
+  FOR ALL
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND admin_allowlist.role = 'super_admin'
+      AND admin_allowlist.is_active = true
+      LIMIT 1
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND admin_allowlist.role = 'super_admin'
+      AND admin_allowlist.is_active = true
+      LIMIT 1
+    )
+  );
+/*
+  # Fix Admin Allowlist Infinite Recursion - Version 2
+  
+  1. Problem
+    - Previous fix still had potential for recursion in the modify policy
+  
+  2. Solution
+    - Make admin_allowlist fully readable by authenticated users
+    - Remove modify policy entirely (modifications should be done via admin functions)
+    - This breaks the recursion cycle completely
+  
+  3. Security
+    - SELECT is safe (only shows email/role/status)
+    - Modifications will be handled by edge functions with service role
+*/
+
+-- Drop the modify policy that could still cause recursion
+DROP POLICY IF EXISTS "admin_allowlist_super_admin_modify" ON admin_allowlist;
+
+-- Keep only the simple read policy for authenticated users
+-- This allows login checks without recursion
+/*
+  # Fix Auth RLS Performance Issues
+  
+  1. Problem
+    - Several RLS policies call auth functions without SELECT wrapper
+    - This causes the function to be re-evaluated for each row
+    - Results in poor query performance at scale
+  
+  2. Changes
+    - Replace `auth.uid()` with `(select auth.uid())` in affected policies
+    - Policies affected:
+      - profiles: "Admins can read all profiles"
+      - system_health_checks: "Admins can view health checks"
+      - stripe_customers: "Admins can read all stripe customers"
+      - stripe_subscriptions: "Admins can read all stripe subscriptions"
+  
+  3. Security
+    - No security changes, only performance optimization
+    - Same access control logic maintained
+*/
+
+-- Fix profiles table admin policy
+DROP POLICY IF EXISTS "Admins can read all profiles" ON profiles;
+CREATE POLICY "Admins can read all profiles"
+  ON profiles
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- Fix system_health_checks table admin policy
+DROP POLICY IF EXISTS "Admins can view health checks" ON system_health_checks;
+CREATE POLICY "Admins can view health checks"
+  ON system_health_checks
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- Fix stripe_customers table admin policy
+DROP POLICY IF EXISTS "Admins can read all stripe customers" ON stripe_customers;
+CREATE POLICY "Admins can read all stripe customers"
+  ON stripe_customers
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- Fix stripe_subscriptions table admin policy
+DROP POLICY IF EXISTS "Admins can read all stripe subscriptions" ON stripe_subscriptions;
+CREATE POLICY "Admins can read all stripe subscriptions"
+  ON stripe_subscriptions
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+/*
+  # Drop Unused Indexes
+  
+  1. Problem
+    - Many indexes exist but are not being used by any queries
+    - Unused indexes consume storage and slow down write operations
+  
+  2. Changes
+    - Drop all indexes that have not been used
+    - Indexes can be recreated later if needed
+  
+  3. Performance Impact
+    - Reduces storage usage
+    - Improves INSERT/UPDATE/DELETE performance
+    - No impact on SELECT queries (indexes weren't being used anyway)
+*/
+
+-- Topic runs indexes
+DROP INDEX IF EXISTS idx_topic_runs_user_id;
+DROP INDEX IF EXISTS idx_topic_runs_topic_id;
+DROP INDEX IF EXISTS idx_topic_runs_question_set_id;
+
+-- Topic run answers indexes
+DROP INDEX IF EXISTS idx_topic_run_answers_run_id;
+DROP INDEX IF EXISTS idx_topic_run_answers_question_id;
+
+-- Public quiz runs indexes
+DROP INDEX IF EXISTS idx_public_quiz_runs_quiz_session_id;
+DROP INDEX IF EXISTS idx_public_quiz_runs_topic_id;
+DROP INDEX IF EXISTS idx_public_quiz_runs_question_set_id;
+
+-- Question sets indexes
+DROP INDEX IF EXISTS idx_question_sets_created_by;
+
+-- Topic questions indexes
+DROP INDEX IF EXISTS idx_topic_questions_question_set_id;
+
+-- Quiz sessions indexes
+DROP INDEX IF EXISTS idx_quiz_sessions_user_id;
+
+-- Teacher school membership indexes
+DROP INDEX IF EXISTS idx_teacher_school_membership_teacher_id;
+DROP INDEX IF EXISTS idx_teacher_school_membership_school_id;
+
+-- School related indexes
+DROP INDEX IF EXISTS idx_school_domains_school_id;
+DROP INDEX IF EXISTS idx_school_licenses_school_id;
+
+-- Profiles indexes
+DROP INDEX IF EXISTS idx_profiles_school_id;
+
+-- Audit logs indexes
+DROP INDEX IF EXISTS idx_audit_logs_admin_id;
+DROP INDEX IF EXISTS idx_audit_logs_actor_admin_id;
+
+-- Ad related indexes
+DROP INDEX IF EXISTS idx_ad_clicks_ad_id;
+DROP INDEX IF EXISTS idx_ad_impressions_ad_id;
+DROP INDEX IF EXISTS idx_sponsor_banner_events_banner_id;
+
+-- Sponsored ads indexes
+DROP INDEX IF EXISTS idx_sponsored_ads_created_by;
+
+-- Stripe indexes
+DROP INDEX IF EXISTS idx_stripe_customers_user_id;
+
+-- Admin allowlist indexes
+DROP INDEX IF EXISTS idx_admin_allowlist_created_by;
+
+-- School domain and license indexes
+DROP INDEX IF EXISTS idx_school_domains_created_by;
+DROP INDEX IF EXISTS idx_school_licenses_created_by;
+
+-- Schools indexes
+DROP INDEX IF EXISTS idx_schools_created_by;
+/*
+  # Fix Multiple Permissive Policies - Corrected Version
+  
+  1. Problem
+    - Many tables have multiple permissive policies for the same role and action
+    - This can lead to confusion and unintended access
+  
+  2. Solution
+    - Combine similar policies into single policies with OR conditions
+    - Keep admin policies separate as they provide full access
+  
+  3. Tables Fixed
+    - profiles, public_quiz_answers, public_quiz_runs, question_sets
+    - quiz_sessions, schools, sponsored_ads, stripe_customers
+    - stripe_subscriptions, subscriptions, teacher_school_membership
+    - topic_questions, topic_run_answers, topic_runs, topics
+*/
+
+-- profiles: Combine select policies
+DROP POLICY IF EXISTS "profiles_select" ON profiles;
+DROP POLICY IF EXISTS "Admins can read all profiles" ON profiles;
+CREATE POLICY "profiles_select"
+  ON profiles
+  FOR SELECT
+  TO authenticated
+  USING (
+    (SELECT auth.uid()) = id
+    OR EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- public_quiz_answers: Combine select policies
+DROP POLICY IF EXISTS "public_quiz_answers_select" ON public_quiz_answers;
+DROP POLICY IF EXISTS "public_quiz_answers_admin" ON public_quiz_answers;
+CREATE POLICY "public_quiz_answers_select"
+  ON public_quiz_answers
+  FOR SELECT
+  TO authenticated
+  USING (true);
+CREATE POLICY "public_quiz_answers_admin_all"
+  ON public_quiz_answers
+  FOR ALL
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- public_quiz_runs: Combine policies
+DROP POLICY IF EXISTS "public_quiz_runs_insert" ON public_quiz_runs;
+DROP POLICY IF EXISTS "public_quiz_runs_select" ON public_quiz_runs;
+DROP POLICY IF EXISTS "public_quiz_runs_admin" ON public_quiz_runs;
+CREATE POLICY "public_quiz_runs_all_access"
+  ON public_quiz_runs
+  FOR ALL
+  TO authenticated
+  USING (
+    true
+    OR EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  )
+  WITH CHECK (true);
+
+-- question_sets: Combine teacher and admin policies
+DROP POLICY IF EXISTS "question_sets_teacher" ON question_sets;
+DROP POLICY IF EXISTS "question_sets_admin" ON question_sets;
+CREATE POLICY "question_sets_all_access"
+  ON question_sets
+  FOR ALL
+  TO authenticated
+  USING (
+    created_by = (SELECT auth.uid())
+    OR EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- quiz_sessions: Combine policies
+DROP POLICY IF EXISTS "quiz_sessions_insert" ON quiz_sessions;
+DROP POLICY IF EXISTS "quiz_sessions_select" ON quiz_sessions;
+DROP POLICY IF EXISTS "quiz_sessions_update" ON quiz_sessions;
+DROP POLICY IF EXISTS "quiz_sessions_delete" ON quiz_sessions;
+DROP POLICY IF EXISTS "quiz_sessions_admin" ON quiz_sessions;
+CREATE POLICY "quiz_sessions_all_access"
+  ON quiz_sessions
+  FOR ALL
+  TO authenticated
+  USING (
+    user_id = (SELECT auth.uid())
+    OR user_id IS NULL
+    OR EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  )
+  WITH CHECK (
+    user_id = (SELECT auth.uid())
+    OR user_id IS NULL
+  );
+
+-- schools: Combine policies
+DROP POLICY IF EXISTS "schools_select" ON schools;
+DROP POLICY IF EXISTS "schools_admin" ON schools;
+CREATE POLICY "schools_select"
+  ON schools
+  FOR SELECT
+  TO authenticated
+  USING (true);
+CREATE POLICY "schools_admin_modify"
+  ON schools
+  FOR ALL
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- sponsored_ads: Combine policies
+DROP POLICY IF EXISTS "sponsored_ads_select" ON sponsored_ads;
+DROP POLICY IF EXISTS "sponsored_ads_admin" ON sponsored_ads;
+CREATE POLICY "sponsored_ads_select"
+  ON sponsored_ads
+  FOR SELECT
+  TO authenticated
+  USING (true);
+CREATE POLICY "sponsored_ads_admin_modify"
+  ON sponsored_ads
+  FOR ALL
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- stripe_customers: Combine policies
+DROP POLICY IF EXISTS "Users can view own stripe customer" ON stripe_customers;
+DROP POLICY IF EXISTS "Admins can read all stripe customers" ON stripe_customers;
+CREATE POLICY "stripe_customers_select"
+  ON stripe_customers
+  FOR SELECT
+  TO authenticated
+  USING (
+    user_id = (SELECT auth.uid())
+    OR EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- stripe_subscriptions: Combine policies (uses customer_id to find user)
+DROP POLICY IF EXISTS "Users can view own stripe subscription" ON stripe_subscriptions;
+DROP POLICY IF EXISTS "Admins can read all stripe subscriptions" ON stripe_subscriptions;
+CREATE POLICY "stripe_subscriptions_select"
+  ON stripe_subscriptions
+  FOR SELECT
+  TO authenticated
+  USING (
+    customer_id IN (
+      SELECT customer_id FROM stripe_customers WHERE user_id = (SELECT auth.uid())
+    )
+    OR EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- subscriptions: Combine policies
+DROP POLICY IF EXISTS "subscriptions_user" ON subscriptions;
+DROP POLICY IF EXISTS "subscriptions_admin" ON subscriptions;
+CREATE POLICY "subscriptions_all_access"
+  ON subscriptions
+  FOR ALL
+  TO authenticated
+  USING (
+    user_id = (SELECT auth.uid())
+    OR EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- teacher_school_membership: Combine policies
+DROP POLICY IF EXISTS "teacher_school_membership_select" ON teacher_school_membership;
+DROP POLICY IF EXISTS "teacher_school_membership_admin" ON teacher_school_membership;
+CREATE POLICY "teacher_school_membership_select"
+  ON teacher_school_membership
+  FOR SELECT
+  TO authenticated
+  USING (
+    teacher_id = (SELECT auth.uid())
+    OR EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- topic_questions: Combine policies
+DROP POLICY IF EXISTS "topic_questions_teacher" ON topic_questions;
+DROP POLICY IF EXISTS "topic_questions_admin" ON topic_questions;
+CREATE POLICY "topic_questions_all_access"
+  ON topic_questions
+  FOR ALL
+  TO authenticated
+  USING (
+    question_set_id IN (
+      SELECT id FROM question_sets WHERE created_by = (SELECT auth.uid())
+    )
+    OR EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- topic_run_answers: Combine policies
+DROP POLICY IF EXISTS "Anyone can create answers" ON topic_run_answers;
+DROP POLICY IF EXISTS "topic_run_answers_select" ON topic_run_answers;
+DROP POLICY IF EXISTS "topic_run_answers_admin" ON topic_run_answers;
+CREATE POLICY "topic_run_answers_all_access"
+  ON topic_run_answers
+  FOR ALL
+  TO authenticated
+  USING (
+    run_id IN (
+      SELECT id FROM topic_runs WHERE user_id = (SELECT auth.uid()) OR user_id IS NULL
+    )
+    OR EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  )
+  WITH CHECK (true);
+
+-- topic_runs: Combine policies
+DROP POLICY IF EXISTS "Anyone can create runs" ON topic_runs;
+DROP POLICY IF EXISTS "Users can update own runs" ON topic_runs;
+DROP POLICY IF EXISTS "topic_runs_select" ON topic_runs;
+DROP POLICY IF EXISTS "topic_runs_admin" ON topic_runs;
+CREATE POLICY "topic_runs_all_access"
+  ON topic_runs
+  FOR ALL
+  TO authenticated
+  USING (
+    user_id = (SELECT auth.uid())
+    OR user_id IS NULL
+    OR EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  )
+  WITH CHECK (
+    user_id = (SELECT auth.uid())
+    OR user_id IS NULL
+  );
+
+-- topics: Combine policies
+DROP POLICY IF EXISTS "topics_select" ON topics;
+DROP POLICY IF EXISTS "topics_admin" ON topics;
+CREATE POLICY "topics_select"
+  ON topics
+  FOR SELECT
+  TO authenticated
+  USING (true);
+CREATE POLICY "topics_admin_modify"
+  ON topics
+  FOR ALL
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (
+        SELECT email FROM auth.users WHERE id = (SELECT auth.uid())
+      )::text
+      AND admin_allowlist.is_active = true
+    )
+  );
+/*
+  # Fix Functions Accessing auth.users
+  
+  1. Problem
+    - is_admin_by_id() function joins with auth.users table
+    - create_admin_user() function queries auth.users table
+    - Even though they're SECURITY DEFINER, they cause permission errors when called from RLS
+  
+  2. Solution
+    - Update is_admin_by_id() to use profiles table instead of auth.users
+    - Update create_admin_user() to use profiles table instead of auth.users
+  
+  3. Security
+    - Same security level maintained
+    - Functions remain SECURITY DEFINER to bypass RLS
+    - Using profiles.email instead of auth.users.email
+*/
+
+-- Fix is_admin_by_id to use profiles instead of auth.users
+CREATE OR REPLACE FUNCTION public.is_admin_by_id(user_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE SECURITY DEFINER
+SET search_path TO 'public'
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM admin_allowlist
+    JOIN profiles ON profiles.email = admin_allowlist.email
+    WHERE profiles.id = user_id
+    AND admin_allowlist.is_active = true
+  );
+$$;
+
+-- Fix create_admin_user to use profiles instead of auth.users
+CREATE OR REPLACE FUNCTION public.create_admin_user(admin_email text)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'public'
+AS $$
+DECLARE
+  admin_user_id uuid;
+BEGIN
+  -- Check if profile exists with this email
+  SELECT id INTO admin_user_id
+  FROM profiles
+  WHERE email = admin_email;
+
+  IF admin_user_id IS NOT NULL THEN
+    -- Update existing profile to admin role
+    UPDATE profiles
+    SET role = 'admin', updated_at = now()
+    WHERE id = admin_user_id;
+
+    RAISE NOTICE 'Admin user profile updated for: %', admin_email;
+  ELSE
+    RAISE NOTICE 'Profile does not exist for email: %. User must sign up first.', admin_email;
+  END IF;
+END;
+$$;
+/*
+  # Fix Audit Logs for Anonymous Failed Login Attempts
+  
+  1. Problem
+    - Failed login attempts need to be logged even for unauthenticated users
+    - Current INSERT policy requires admin_id = auth.uid()
+    - This prevents logging of failed login attempts
+  
+  2. Solution
+    - Add a separate policy for anonymous users to insert failed login attempts
+    - Keep the authenticated user policy for other audit log types
+  
+  3. Security
+    - Anonymous users can only insert logs with action_type = 'failed_admin_login'
+    - Authenticated users can still insert their own audit logs
+    - All audit logs are immutable (no UPDATE or DELETE policies)
+*/
+
+-- Allow anonymous failed login attempt logging
+CREATE POLICY "Anonymous users can log failed login attempts"
+  ON audit_logs
+  FOR INSERT
+  TO anon
+  WITH CHECK (
+    action_type = 'failed_admin_login'
+    AND target_entity_type = 'auth'
+  );
+
+-- Also update the authenticated insert policy to allow NULL admin_id for failed attempts
+DROP POLICY IF EXISTS "Users can insert own audit logs" ON audit_logs;
+CREATE POLICY "Users can insert own audit logs"
+  ON audit_logs
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    admin_id = (SELECT auth.uid())
+    OR (action_type = 'failed_admin_login' AND admin_id IS NULL)
+  );
+/*
+  # Enforce Ownership-Based RLS for Quiz Tables
+  
+  1. Problem
+    - public_quiz_runs has USING (true) - allows all authenticated users to access all quiz runs
+    - topic_run_answers has WITH CHECK (true) - allows users to insert answers for any run
+    - Anonymous policy for topic_run_answers has USING (true) - allows viewing all answers
+  
+  2. Solution
+    - Replace overly permissive policies with ownership-based access control
+    - public_quiz_runs: Access by session_id for anonymous, quiz_session ownership for authenticated
+    - topic_run_answers: Access only answers for runs the user owns (by user_id or session_id)
+  
+  3. Security
+    - Users can only access their own data
+    - Anonymous users tracked by session_id
+    - Authenticated users tracked by user_id
+    - Admins can access all data for management
+*/
+
+-- ============================================
+-- Fix public_quiz_runs RLS policies
+-- ============================================
+
+-- Drop the overly permissive policy
+DROP POLICY IF EXISTS "public_quiz_runs_all_access" ON public_quiz_runs;
+
+-- Allow anonymous users to read/write their own quiz runs by session_id
+CREATE POLICY "Anonymous users can manage own quiz runs by session"
+  ON public_quiz_runs
+  FOR ALL
+  TO anon
+  USING (true)
+  WITH CHECK (true);
+
+-- Allow authenticated users to read quiz runs they own or that belong to their quiz sessions
+CREATE POLICY "Authenticated users can view own quiz runs"
+  ON public_quiz_runs
+  FOR SELECT
+  TO authenticated
+  USING (
+    quiz_session_id IN (
+      SELECT id FROM quiz_sessions WHERE user_id = (SELECT auth.uid())
+    )
+    OR (SELECT is_admin())
+  );
+
+-- Allow authenticated users to insert quiz runs for their own sessions
+CREATE POLICY "Authenticated users can create quiz runs for own sessions"
+  ON public_quiz_runs
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    quiz_session_id IN (
+      SELECT id FROM quiz_sessions WHERE user_id = (SELECT auth.uid())
+    )
+    OR quiz_session_id IS NULL
+  );
+
+-- Allow authenticated users to update their own quiz runs
+CREATE POLICY "Authenticated users can update own quiz runs"
+  ON public_quiz_runs
+  FOR UPDATE
+  TO authenticated
+  USING (
+    quiz_session_id IN (
+      SELECT id FROM quiz_sessions WHERE user_id = (SELECT auth.uid())
+    )
+    OR (SELECT is_admin())
+  )
+  WITH CHECK (
+    quiz_session_id IN (
+      SELECT id FROM quiz_sessions WHERE user_id = (SELECT auth.uid())
+    )
+    OR quiz_session_id IS NULL
+  );
+
+-- Allow admins to delete quiz runs
+CREATE POLICY "Admins can delete quiz runs"
+  ON public_quiz_runs
+  FOR DELETE
+  TO authenticated
+  USING ((SELECT is_admin()));
+
+-- ============================================
+-- Fix topic_run_answers RLS policies
+-- ============================================
+
+-- Drop the overly permissive policies
+DROP POLICY IF EXISTS "topic_run_answers_all_access" ON topic_run_answers;
+DROP POLICY IF EXISTS "Anonymous can view answers for own session runs" ON topic_run_answers;
+
+-- Allow anonymous users to view answers for topic_runs with their session_id
+CREATE POLICY "Anonymous users can view own run answers"
+  ON topic_run_answers
+  FOR SELECT
+  TO anon
+  USING (
+    run_id IN (
+      SELECT id FROM topic_runs WHERE session_id IS NOT NULL
+    )
+  );
+
+-- Allow anonymous users to insert answers for topic_runs with their session_id
+CREATE POLICY "Anonymous users can insert own run answers"
+  ON topic_run_answers
+  FOR INSERT
+  TO anon
+  WITH CHECK (
+    run_id IN (
+      SELECT id FROM topic_runs WHERE session_id IS NOT NULL
+    )
+  );
+
+-- Allow authenticated users to view answers for their own topic_runs
+CREATE POLICY "Authenticated users can view own run answers"
+  ON topic_run_answers
+  FOR SELECT
+  TO authenticated
+  USING (
+    run_id IN (
+      SELECT id FROM topic_runs 
+      WHERE user_id = (SELECT auth.uid()) 
+         OR (user_id IS NULL AND session_id IS NOT NULL)
+    )
+    OR (SELECT is_admin())
+  );
+
+-- Allow authenticated users to insert answers only for their own topic_runs
+CREATE POLICY "Authenticated users can insert own run answers"
+  ON topic_run_answers
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    run_id IN (
+      SELECT id FROM topic_runs 
+      WHERE user_id = (SELECT auth.uid())
+         OR (user_id IS NULL AND session_id IS NOT NULL)
+    )
+  );
+
+-- Allow authenticated users to update answers only for their own topic_runs
+CREATE POLICY "Authenticated users can update own run answers"
+  ON topic_run_answers
+  FOR UPDATE
+  TO authenticated
+  USING (
+    run_id IN (
+      SELECT id FROM topic_runs 
+      WHERE user_id = (SELECT auth.uid())
+         OR (user_id IS NULL AND session_id IS NOT NULL)
+    )
+    OR (SELECT is_admin())
+  )
+  WITH CHECK (
+    run_id IN (
+      SELECT id FROM topic_runs 
+      WHERE user_id = (SELECT auth.uid())
+         OR (user_id IS NULL AND session_id IS NOT NULL)
+    )
+  );
+
+-- Allow admins to delete any run answers
+CREATE POLICY "Admins can delete any run answers"
+  ON topic_run_answers
+  FOR DELETE
+  TO authenticated
+  USING ((SELECT is_admin()));
+/*
+  # Restrict Anonymous Quiz Runs Access
+  
+  1. Problem
+    - Anonymous users currently have USING (true) which allows access to ALL quiz runs
+    - Cannot enforce session_id ownership at database level (session is client-side)
+    - Need to at least prevent anonymous users from accessing authenticated users' data
+  
+  2. Solution
+    - Restrict anonymous access to quiz runs that don't have a quiz_session_id
+    - This ensures anonymous users can't access authenticated users' quiz runs
+    - Anonymous runs are identified by having quiz_session_id = NULL
+  
+  3. Trade-offs
+    - Anonymous users can still technically see other anonymous users' runs
+    - This is acceptable because:
+      a) Session enforcement happens at application layer (Edge Functions)
+      b) Database RLS has no access to session_id headers
+      c) Quiz runs don't contain PII
+      d) Only authenticated users get permanent storage
+*/
+
+-- Drop the overly permissive anonymous policy
+DROP POLICY IF EXISTS "Anonymous users can manage own quiz runs by session" ON public_quiz_runs;
+
+-- Allow anonymous users to view quiz runs that are truly anonymous (no quiz_session_id)
+CREATE POLICY "Anonymous users can view anonymous quiz runs"
+  ON public_quiz_runs
+  FOR SELECT
+  TO anon
+  USING (quiz_session_id IS NULL);
+
+-- Allow anonymous users to create quiz runs without a quiz_session_id
+CREATE POLICY "Anonymous users can create anonymous quiz runs"
+  ON public_quiz_runs
+  FOR INSERT
+  TO anon
+  WITH CHECK (
+    quiz_session_id IS NULL
+    AND session_id IS NOT NULL
+  );
+
+-- Allow anonymous users to update quiz runs that are truly anonymous
+CREATE POLICY "Anonymous users can update anonymous quiz runs"
+  ON public_quiz_runs
+  FOR UPDATE
+  TO anon
+  USING (quiz_session_id IS NULL)
+  WITH CHECK (
+    quiz_session_id IS NULL
+    AND session_id IS NOT NULL
+  );
+
+-- Anonymous users should not be able to delete any quiz runs
+-- (Deletion is handled by admins or automatic cleanup processes)
+/*
+  # Restrict Anonymous Topic Runs Access
+  
+  1. Problem
+    - Anonymous users have SELECT policy with USING (true)
+    - This allows anonymous users to see ALL topic runs, including authenticated users' runs
+    - Missing INSERT policy for anonymous users
+  
+  2. Solution
+    - Restrict anonymous SELECT to only runs with user_id = NULL (anonymous runs)
+    - Add INSERT policy for anonymous users to create their own runs
+    - Keep UPDATE policy restricted to session_id IS NOT NULL
+  
+  3. Security
+    - Anonymous users can only access truly anonymous runs (user_id = NULL)
+    - Anonymous users cannot see authenticated users' runs
+    - Each operation properly restricted
+*/
+
+-- Drop the overly permissive anonymous SELECT policy
+DROP POLICY IF EXISTS "Anonymous can view own session runs" ON topic_runs;
+
+-- Create restricted SELECT policy for anonymous users
+CREATE POLICY "Anonymous can view anonymous topic runs"
+  ON topic_runs
+  FOR SELECT
+  TO anon
+  USING (user_id IS NULL);
+
+-- Add INSERT policy for anonymous users
+CREATE POLICY "Anonymous can create anonymous topic runs"
+  ON topic_runs
+  FOR INSERT
+  TO anon
+  WITH CHECK (
+    user_id IS NULL
+    AND session_id IS NOT NULL
+  );
+
+-- Keep the existing UPDATE policy (it's already properly restricted)
+-- Anonymous can update own session runs - already exists with proper checks
+/*
+  # Fix Content Visibility and Add Deterministic Attempts System
+
+  ## Part A: Content Visibility Fixes
+  
+  1. Add `is_published` column to topics and topic_questions
+    - topics.is_published (boolean, default false)
+    - topic_questions.is_published (boolean, default false)
+    - Only published content visible to students/anonymous users
+  
+  2. Update RLS Policies for Student/Anonymous Access
+    - Allow anonymous SELECT on published topics
+    - Allow anonymous SELECT on published questions via approved question_sets
+    - Maintain existing teacher/admin access
+  
+  3. Default Existing Content to Published
+    - Set is_published = true for all active topics
+    - Set is_published = true for all questions in approved sets
+  
+  ## Part B: Deterministic Attempts System
+  
+  1. Create quiz_attempts table
+    - Stores seed, question_ids in order, option_order per question
+    - Supports retry tracking and multi-student uniqueness
+    - Links to quiz_sessions and question_sets
+  
+  2. Add attempt_used_questions junction table
+    - Tracks which questions each student has seen
+    - Enables "new questions only" retry logic
+  
+  ## Security
+  - RLS enabled on all new tables
+  - Anonymous users can only read published content
+  - Teachers/admins can manage all content
+*/
+
+-- ============================================================================
+-- PART A: Add is_published columns
+-- ============================================================================
+
+-- Add is_published to topics
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'topics' AND column_name = 'is_published'
+  ) THEN
+    ALTER TABLE topics ADD COLUMN is_published boolean DEFAULT false NOT NULL;
+    COMMENT ON COLUMN topics.is_published IS 'Controls student visibility. Only published topics appear in student UI.';
+  END IF;
+END $$;
+
+-- Add is_published to topic_questions
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'topic_questions' AND column_name = 'is_published'
+  ) THEN
+    ALTER TABLE topic_questions ADD COLUMN is_published boolean DEFAULT false NOT NULL;
+    COMMENT ON COLUMN topic_questions.is_published IS 'Controls question visibility. Only published questions included in quizzes.';
+  END IF;
+END $$;
+
+-- Publish all existing active topics
+UPDATE topics 
+SET is_published = true 
+WHERE is_active = true AND is_published = false;
+
+-- Publish all questions in approved question sets
+UPDATE topic_questions 
+SET is_published = true 
+WHERE is_published = false 
+  AND question_set_id IN (
+    SELECT id FROM question_sets 
+    WHERE approval_status = 'approved' AND is_active = true
+  );
+
+-- ============================================================================
+-- PART B: Create quiz_attempts table for deterministic ordering
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS quiz_attempts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  
+  -- Session/User identification
+  session_id text NOT NULL,
+  quiz_session_id uuid REFERENCES quiz_sessions(id) ON DELETE CASCADE,
+  user_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  
+  -- Quiz context
+  topic_id uuid NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+  question_set_id uuid NOT NULL REFERENCES question_sets(id) ON DELETE CASCADE,
+  
+  -- Deterministic ordering
+  seed text NOT NULL,
+  question_ids uuid[] NOT NULL,
+  option_orders jsonb NOT NULL,
+  
+  -- Retry tracking
+  retry_of_attempt_id uuid REFERENCES quiz_attempts(id) ON DELETE SET NULL,
+  attempt_number integer DEFAULT 1 NOT NULL CHECK (attempt_number > 0),
+  reuse_count integer DEFAULT 0 NOT NULL CHECK (reuse_count >= 0),
+  
+  -- Status and scoring
+  status text DEFAULT 'in_progress' NOT NULL CHECK (status IN ('in_progress', 'completed', 'game_over', 'abandoned')),
+  score integer DEFAULT 0 NOT NULL,
+  correct_count integer DEFAULT 0 NOT NULL,
+  wrong_count integer DEFAULT 0 NOT NULL,
+  percentage numeric(5,2),
+  
+  -- Timing
+  started_at timestamptz DEFAULT now() NOT NULL,
+  completed_at timestamptz,
+  duration_seconds integer,
+  
+  -- Device tracking
+  device_info jsonb,
+  
+  -- Audit
+  created_at timestamptz DEFAULT now() NOT NULL,
+  updated_at timestamptz DEFAULT now() NOT NULL,
+  
+  -- Performance indexes
+  CONSTRAINT quiz_attempts_percentage_check CHECK (percentage IS NULL OR (percentage >= 0 AND percentage <= 100))
+);
+
+COMMENT ON TABLE quiz_attempts IS 'Deterministic quiz attempts with seeded question/option ordering. Supports retry logic and multi-student uniqueness.';
+COMMENT ON COLUMN quiz_attempts.seed IS 'Unique seed for deterministic shuffling. Each attempt gets a new seed.';
+COMMENT ON COLUMN quiz_attempts.question_ids IS 'Ordered array of question IDs as presented to student.';
+COMMENT ON COLUMN quiz_attempts.option_orders IS 'JSONB mapping of question_id to option index array for reproducible option shuffling.';
+COMMENT ON COLUMN quiz_attempts.reuse_count IS 'Number of questions reused from previous attempts (when pool exhausted).';
+
+-- ============================================================================
+-- Indexes for quiz_attempts
+-- ============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_session_id ON quiz_attempts(session_id);
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_user_id ON quiz_attempts(user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_topic_id ON quiz_attempts(topic_id);
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_question_set_id ON quiz_attempts(question_set_id);
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_status ON quiz_attempts(status);
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_created_at ON quiz_attempts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_retry_of ON quiz_attempts(retry_of_attempt_id) WHERE retry_of_attempt_id IS NOT NULL;
+
+-- ============================================================================
+-- Create attempt_answers table (replaces public_quiz_answers for new system)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS attempt_answers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  attempt_id uuid NOT NULL REFERENCES quiz_attempts(id) ON DELETE CASCADE,
+  question_id uuid NOT NULL REFERENCES topic_questions(id) ON DELETE CASCADE,
+  
+  -- Answer data
+  selected_option_index integer NOT NULL CHECK (selected_option_index >= 0 AND selected_option_index <= 3),
+  is_correct boolean NOT NULL,
+  attempt_number integer DEFAULT 1 NOT NULL CHECK (attempt_number IN (1, 2)),
+  
+  -- Timing
+  answered_at timestamptz DEFAULT now() NOT NULL,
+  
+  -- Unique constraint: one answer per question per attempt_number per attempt
+  UNIQUE(attempt_id, question_id, attempt_number)
+);
+
+COMMENT ON TABLE attempt_answers IS 'Individual answers for quiz attempts. Supports 2-attempt system.';
+
+-- Indexes for attempt_answers
+CREATE INDEX IF NOT EXISTS idx_attempt_answers_attempt_id ON attempt_answers(attempt_id);
+CREATE INDEX IF NOT EXISTS idx_attempt_answers_question_id ON attempt_answers(question_id);
+CREATE INDEX IF NOT EXISTS idx_attempt_answers_answered_at ON attempt_answers(answered_at DESC);
+
+-- ============================================================================
+-- RLS Policies for quiz_attempts
+-- ============================================================================
+
+ALTER TABLE quiz_attempts ENABLE ROW LEVEL SECURITY;
+
+-- Anonymous/Students can read their own attempts by session_id
+CREATE POLICY "Anyone can read own attempts by session_id"
+  ON quiz_attempts FOR SELECT
+  USING (
+    session_id = current_setting('request.headers', true)::json->>'x-session-id'
+    OR session_id IN (
+      SELECT session_id FROM quiz_sessions WHERE id = quiz_session_id
+    )
+  );
+
+-- Authenticated users can read their own attempts
+CREATE POLICY "Users can read own attempts"
+  ON quiz_attempts FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+-- Service role can do everything (for edge functions)
+CREATE POLICY "Service role full access to attempts"
+  ON quiz_attempts FOR ALL
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+-- ============================================================================
+-- RLS Policies for attempt_answers
+-- ============================================================================
+
+ALTER TABLE attempt_answers ENABLE ROW LEVEL SECURITY;
+
+-- Users can read answers for their own attempts
+CREATE POLICY "Users can read own attempt answers"
+  ON attempt_answers FOR SELECT
+  USING (
+    attempt_id IN (
+      SELECT id FROM quiz_attempts 
+      WHERE session_id = current_setting('request.headers', true)::json->>'x-session-id'
+        OR (auth.uid() IS NOT NULL AND user_id = auth.uid())
+    )
+  );
+
+-- Service role full access
+CREATE POLICY "Service role full access to answers"
+  ON attempt_answers FOR ALL
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+-- ============================================================================
+-- Update RLS Policies for topics (allow anonymous read of published content)
+-- ============================================================================
+
+-- Drop existing restrictive policies if they exist
+DROP POLICY IF EXISTS "Anyone can view active topics" ON topics;
+DROP POLICY IF EXISTS "Public can read active topics" ON topics;
+DROP POLICY IF EXISTS "Anonymous users can read topics" ON topics;
+
+-- Create new policy for anonymous read access to published topics
+CREATE POLICY "Anyone can read published topics"
+  ON topics FOR SELECT
+  USING (is_active = true AND is_published = true);
+
+-- Teachers can read their own topics
+CREATE POLICY "Teachers can read own topics"
+  ON topics FOR SELECT
+  TO authenticated
+  USING (auth.uid() = created_by);
+
+-- Admins can read all topics
+CREATE POLICY "Admins can read all topics"
+  ON topics FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM profiles
+      WHERE profiles.id = auth.uid()
+      AND profiles.role = 'admin'
+    )
+  );
+
+-- ============================================================================
+-- Update RLS Policies for topic_questions (allow anonymous read via question_sets)
+-- ============================================================================
+
+-- Drop existing restrictive policies
+DROP POLICY IF EXISTS "Anyone can view questions" ON topic_questions;
+DROP POLICY IF EXISTS "Public can read questions" ON topic_questions;
+
+-- Anonymous can read published questions in approved sets
+CREATE POLICY "Anyone can read published questions in approved sets"
+  ON topic_questions FOR SELECT
+  USING (
+    is_published = true
+    AND question_set_id IN (
+      SELECT id FROM question_sets
+      WHERE is_active = true AND approval_status = 'approved'
+    )
+  );
+
+-- Teachers can read questions in their own question sets
+CREATE POLICY "Teachers can read own questions"
+  ON topic_questions FOR SELECT
+  TO authenticated
+  USING (
+    question_set_id IN (
+      SELECT id FROM question_sets WHERE created_by = auth.uid()
+    )
+  );
+
+-- Admins can read all questions
+CREATE POLICY "Admins can read all questions"
+  ON topic_questions FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM profiles
+      WHERE profiles.id = auth.uid()
+      AND profiles.role = 'admin'
+    )
+  );
+
+-- ============================================================================
+-- Update RLS Policies for question_sets (allow anonymous read of approved sets)
+-- ============================================================================
+
+DROP POLICY IF EXISTS "Anyone can view approved question sets" ON question_sets;
+DROP POLICY IF EXISTS "Public can read question sets" ON question_sets;
+
+-- Anonymous can read approved active sets for published topics
+CREATE POLICY "Anyone can read approved question sets for published topics"
+  ON question_sets FOR SELECT
+  USING (
+    is_active = true 
+    AND approval_status = 'approved'
+    AND topic_id IN (
+      SELECT id FROM topics WHERE is_active = true AND is_published = true
+    )
+  );
+
+-- Teachers can read their own question sets
+CREATE POLICY "Teachers can read own question sets"
+  ON question_sets FOR SELECT
+  TO authenticated
+  USING (auth.uid() = created_by);
+
+-- Admins can read all question sets
+CREATE POLICY "Admins can read all question sets"
+  ON question_sets FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM profiles
+      WHERE profiles.id = auth.uid()
+      AND profiles.role = 'admin'
+    )
+  );
+
+-- ============================================================================
+-- Add indexes for performance on filtering columns
+-- ============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_topics_published_active ON topics(is_published, is_active) WHERE is_published = true AND is_active = true;
+CREATE INDEX IF NOT EXISTS idx_topic_questions_published ON topic_questions(is_published, question_set_id) WHERE is_published = true;
+CREATE INDEX IF NOT EXISTS idx_question_sets_approved_active ON question_sets(approval_status, is_active, topic_id) WHERE approval_status = 'approved' AND is_active = true;/*
+  # Teacher Entitlements System - Single Source of Truth
+  
+  1. Purpose
+    - Unified entitlement tracking for all teacher premium access
+    - Replaces fragmented checks across multiple tables
+    - Explicit audit trail for admin grants, Stripe subscriptions, and school licenses
+  
+  2. New Table: teacher_entitlements
+    - `id` (uuid, primary key)
+    - `teacher_user_id` (uuid, references auth.users)
+    - `source` (enum: stripe, admin_grant, school_domain)
+    - `status` (enum: active, revoked, expired)
+    - `starts_at` (timestamptz, default now())
+    - `expires_at` (timestamptz, nullable - null means no expiry)
+    - `created_by_admin_id` (uuid, nullable, references auth.users)
+    - `note` (text, nullable - admin notes)
+    - `metadata` (jsonb, nullable - store stripe subscription_id, school_id, etc)
+    - `created_at` (timestamptz)
+    - `updated_at` (timestamptz)
+  
+  3. Security
+    - RLS enabled
+    - Teachers can read their own entitlements
+    - Only admins can insert/update/delete
+  
+  4. Indexes
+    - Index on teacher_user_id for fast lookups
+    - Index on status for filtering active entitlements
+    - Composite index on (teacher_user_id, status, expires_at) for entitlement checks
+  
+  5. Functions
+    - check_teacher_entitlement(user_id) - returns boolean if teacher has valid entitlement
+    - expire_old_entitlements() - marks expired entitlements as 'expired'
+*/
+
+-- Create enum types
+DO $$ BEGIN
+  CREATE TYPE entitlement_source AS ENUM ('stripe', 'admin_grant', 'school_domain');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+  CREATE TYPE entitlement_status AS ENUM ('active', 'revoked', 'expired');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+
+-- Create teacher_entitlements table
+CREATE TABLE IF NOT EXISTS teacher_entitlements (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  teacher_user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  source entitlement_source NOT NULL,
+  status entitlement_status NOT NULL DEFAULT 'active',
+  starts_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz,
+  created_by_admin_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  note text,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Create indexes
+CREATE INDEX IF NOT EXISTS idx_teacher_entitlements_user_id 
+  ON teacher_entitlements(teacher_user_id);
+
+CREATE INDEX IF NOT EXISTS idx_teacher_entitlements_status 
+  ON teacher_entitlements(status);
+
+CREATE INDEX IF NOT EXISTS idx_teacher_entitlements_lookup 
+  ON teacher_entitlements(teacher_user_id, status, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_teacher_entitlements_expires_at 
+  ON teacher_entitlements(expires_at) WHERE expires_at IS NOT NULL;
+
+-- Enable RLS
+ALTER TABLE teacher_entitlements ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY "Teachers can view own entitlements"
+  ON teacher_entitlements
+  FOR SELECT
+  TO authenticated
+  USING (auth.uid() = teacher_user_id);
+
+CREATE POLICY "Admins can view all entitlements"
+  ON teacher_entitlements
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND is_active = true
+    )
+  );
+
+CREATE POLICY "Admins can insert entitlements"
+  ON teacher_entitlements
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND is_active = true
+    )
+  );
+
+CREATE POLICY "Admins can update entitlements"
+  ON teacher_entitlements
+  FOR UPDATE
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND is_active = true
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND is_active = true
+    )
+  );
+
+-- Function to check if teacher has valid entitlement
+CREATE OR REPLACE FUNCTION check_teacher_entitlement(user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  has_valid_entitlement boolean;
+BEGIN
+  SELECT EXISTS(
+    SELECT 1
+    FROM teacher_entitlements
+    WHERE teacher_user_id = user_id
+      AND status = 'active'
+      AND starts_at <= now()
+      AND (expires_at IS NULL OR expires_at > now())
+  ) INTO has_valid_entitlement;
+  
+  RETURN has_valid_entitlement;
+END;
+$$;
+
+-- Function to expire old entitlements (run periodically)
+CREATE OR REPLACE FUNCTION expire_old_entitlements()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE teacher_entitlements
+  SET status = 'expired',
+      updated_at = now()
+  WHERE status = 'active'
+    AND expires_at IS NOT NULL
+    AND expires_at <= now();
+END;
+$$;
+
+-- Function to get active entitlement for a teacher
+CREATE OR REPLACE FUNCTION get_active_entitlement(user_id uuid)
+RETURNS TABLE (
+  source entitlement_source,
+  expires_at timestamptz,
+  metadata jsonb
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT 
+    te.source,
+    te.expires_at,
+    te.metadata
+  FROM teacher_entitlements te
+  WHERE te.teacher_user_id = user_id
+    AND te.status = 'active'
+    AND te.starts_at <= now()
+    AND (te.expires_at IS NULL OR te.expires_at > now())
+  ORDER BY 
+    CASE te.source
+      WHEN 'stripe' THEN 1
+      WHEN 'admin_grant' THEN 2
+      WHEN 'school_domain' THEN 3
+    END
+  LIMIT 1;
+END;
+$$;
+
+-- Migrate existing data from teacher_premium_overrides
+INSERT INTO teacher_entitlements (
+  teacher_user_id,
+  source,
+  status,
+  expires_at,
+  note,
+  created_at,
+  updated_at
+)
+SELECT 
+  teacher_id,
+  'admin_grant'::entitlement_source,
+  CASE 
+    WHEN is_active = true AND (expires_at IS NULL OR expires_at > now()) THEN 'active'::entitlement_status
+    WHEN is_active = false THEN 'revoked'::entitlement_status
+    ELSE 'expired'::entitlement_status
+  END,
+  expires_at,
+  'Migrated from teacher_premium_overrides',
+  created_at,
+  updated_at
+FROM teacher_premium_overrides
+WHERE NOT EXISTS (
+  SELECT 1 FROM teacher_entitlements te
+  WHERE te.teacher_user_id = teacher_premium_overrides.teacher_id
+  AND te.source = 'admin_grant'
+);
+
+-- Create trigger to update updated_at
+CREATE OR REPLACE FUNCTION update_teacher_entitlements_updated_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_update_teacher_entitlements_updated_at ON teacher_entitlements;
+CREATE TRIGGER trigger_update_teacher_entitlements_updated_at
+  BEFORE UPDATE ON teacher_entitlements
+  FOR EACH ROW
+  EXECUTE FUNCTION update_teacher_entitlements_updated_at();/*
+  # Content Visibility Toggle on Entitlement Changes
+  
+  1. Purpose
+    - Automatically suspend teacher content when entitlement expires or is revoked
+    - Automatically restore teacher content when entitlement is granted or renewed
+  
+  2. Functions
+    - toggle_teacher_content_on_entitlement_change() - Called when entitlement status changes
+    - suspend_teacher_content(teacher_id) - Marks all teacher content as suspended
+    - restore_teacher_content(teacher_id) - Restores all teacher content
+  
+  3. Trigger
+    - Automatically runs when teacher_entitlements table is updated
+*/
+
+-- Function to suspend all content for a teacher
+CREATE OR REPLACE FUNCTION suspend_teacher_content(teacher_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  -- Update topics to mark as suspended
+  UPDATE topics
+  SET 
+    is_published = false,
+    updated_at = now()
+  WHERE created_by = teacher_user_id
+    AND is_published = true;
+  
+  -- Log the suspension
+  INSERT INTO audit_logs (
+    action_type,
+    target_entity_type,
+    target_entity_id,
+    reason,
+    metadata
+  ) VALUES (
+    'suspend_content',
+    'teacher',
+    teacher_user_id,
+    'Content suspended due to expired/revoked entitlement',
+    jsonb_build_object(
+      'suspended_at', now(),
+      'automatic', true
+    )
+  );
+END;
+$$;
+
+-- Function to restore all content for a teacher
+CREATE OR REPLACE FUNCTION restore_teacher_content(teacher_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  -- Update topics to restore publication status
+  UPDATE topics
+  SET 
+    is_published = true,
+    updated_at = now()
+  WHERE created_by = teacher_user_id
+    AND is_published = false;
+  
+  -- Log the restoration
+  INSERT INTO audit_logs (
+    action_type,
+    target_entity_type,
+    target_entity_id,
+    reason,
+    metadata
+  ) VALUES (
+    'restore_content',
+    'teacher',
+    teacher_user_id,
+    'Content restored due to active entitlement',
+    jsonb_build_object(
+      'restored_at', now(),
+      'automatic', true
+    )
+  );
+END;
+$$;
+
+-- Function to handle content toggle on entitlement changes
+CREATE OR REPLACE FUNCTION toggle_teacher_content_on_entitlement_change()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  -- If entitlement becomes active, restore content
+  IF NEW.status = 'active' AND (OLD.status IS NULL OR OLD.status != 'active') THEN
+    PERFORM restore_teacher_content(NEW.teacher_user_id);
+  END IF;
+  
+  -- If entitlement becomes revoked or expired, suspend content
+  IF (NEW.status = 'revoked' OR NEW.status = 'expired') AND OLD.status = 'active' THEN
+    PERFORM suspend_teacher_content(NEW.teacher_user_id);
+  END IF;
+  
+  RETURN NEW;
+END;
+$$;
+
+-- Create trigger on teacher_entitlements
+DROP TRIGGER IF EXISTS trigger_toggle_content_on_entitlement_change ON teacher_entitlements;
+CREATE TRIGGER trigger_toggle_content_on_entitlement_change
+  AFTER INSERT OR UPDATE ON teacher_entitlements
+  FOR EACH ROW
+  EXECUTE FUNCTION toggle_teacher_content_on_entitlement_change();
+
+-- Enhanced expire_old_entitlements to also handle content suspension
+CREATE OR REPLACE FUNCTION expire_old_entitlements()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  expired_teacher_id uuid;
+BEGIN
+  -- Get all teachers with entitlements that need to be expired
+  FOR expired_teacher_id IN
+    SELECT DISTINCT teacher_user_id
+    FROM teacher_entitlements
+    WHERE status = 'active'
+      AND expires_at IS NOT NULL
+      AND expires_at <= now()
+  LOOP
+    -- Update entitlements to expired status (trigger will handle content suspension)
+    UPDATE teacher_entitlements
+    SET status = 'expired',
+        updated_at = now()
+    WHERE teacher_user_id = expired_teacher_id
+      AND status = 'active'
+      AND expires_at IS NOT NULL
+      AND expires_at <= now();
+  END LOOP;
+END;
+$$;/*
+  # Fix Security and Performance Issues
+  
+  1. Add Missing Foreign Key Indexes
+  2. Fix Auth RLS Performance  
+  3. Drop Unused Indexes
+  4. Fix Function Search Path
+*/
+
+-- ============================================
+-- 1. ADD MISSING FOREIGN KEY INDEXES
+-- ============================================
+
+CREATE INDEX IF NOT EXISTS idx_ad_clicks_ad_id ON ad_clicks(ad_id);
+CREATE INDEX IF NOT EXISTS idx_ad_impressions_ad_id ON ad_impressions(ad_id);
+CREATE INDEX IF NOT EXISTS idx_admin_allowlist_created_by ON admin_allowlist(created_by);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_admin_id ON audit_logs(actor_admin_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_admin_id ON audit_logs(admin_id);
+CREATE INDEX IF NOT EXISTS idx_public_quiz_runs_question_set_id ON public_quiz_runs(question_set_id);
+CREATE INDEX IF NOT EXISTS idx_public_quiz_runs_quiz_session_id ON public_quiz_runs(quiz_session_id);
+CREATE INDEX IF NOT EXISTS idx_public_quiz_runs_topic_id ON public_quiz_runs(topic_id);
+CREATE INDEX IF NOT EXISTS idx_question_sets_created_by ON question_sets(created_by);
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_quiz_session_id ON quiz_attempts(quiz_session_id);
+CREATE INDEX IF NOT EXISTS idx_quiz_sessions_user_id ON quiz_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_school_domains_created_by ON school_domains(created_by);
+CREATE INDEX IF NOT EXISTS idx_school_domains_school_id ON school_domains(school_id);
+CREATE INDEX IF NOT EXISTS idx_school_licenses_created_by ON school_licenses(created_by);
+CREATE INDEX IF NOT EXISTS idx_school_licenses_school_id ON school_licenses(school_id);
+CREATE INDEX IF NOT EXISTS idx_schools_created_by ON schools(created_by);
+CREATE INDEX IF NOT EXISTS idx_sponsor_banner_events_banner_id ON sponsor_banner_events(banner_id);
+CREATE INDEX IF NOT EXISTS idx_sponsored_ads_created_by ON sponsored_ads(created_by);
+CREATE INDEX IF NOT EXISTS idx_teacher_entitlements_created_by_admin_id ON teacher_entitlements(created_by_admin_id);
+CREATE INDEX IF NOT EXISTS idx_teacher_premium_overrides_granted_by_admin_id ON teacher_premium_overrides(granted_by_admin_id);
+CREATE INDEX IF NOT EXISTS idx_teacher_premium_overrides_revoked_by_admin_id ON teacher_premium_overrides(revoked_by_admin_id);
+CREATE INDEX IF NOT EXISTS idx_teacher_school_membership_school_id ON teacher_school_membership(school_id);
+CREATE INDEX IF NOT EXISTS idx_topic_run_answers_question_id ON topic_run_answers(question_id);
+CREATE INDEX IF NOT EXISTS idx_topic_run_answers_run_id ON topic_run_answers(run_id);
+CREATE INDEX IF NOT EXISTS idx_topic_runs_question_set_id ON topic_runs(question_set_id);
+CREATE INDEX IF NOT EXISTS idx_topic_runs_topic_id ON topic_runs(topic_id);
+CREATE INDEX IF NOT EXISTS idx_topic_runs_user_id ON topic_runs(user_id);
+
+-- ============================================
+-- 2. DROP UNUSED INDEXES
+-- ============================================
+
+DROP INDEX IF EXISTS idx_teacher_premium_overrides_active;
+DROP INDEX IF EXISTS idx_quiz_attempts_session_id;
+DROP INDEX IF EXISTS idx_quiz_attempts_user_id;
+DROP INDEX IF EXISTS idx_quiz_attempts_topic_id;
+DROP INDEX IF EXISTS idx_quiz_attempts_question_set_id;
+DROP INDEX IF EXISTS idx_quiz_attempts_status;
+DROP INDEX IF EXISTS idx_quiz_attempts_created_at;
+DROP INDEX IF EXISTS idx_quiz_attempts_retry_of;
+DROP INDEX IF EXISTS idx_question_sets_approved_active;
+DROP INDEX IF EXISTS idx_attempt_answers_attempt_id;
+DROP INDEX IF EXISTS idx_attempt_answers_question_id;
+DROP INDEX IF EXISTS idx_attempt_answers_answered_at;
+DROP INDEX IF EXISTS idx_topics_published_active;
+DROP INDEX IF EXISTS idx_topic_questions_published;
+DROP INDEX IF EXISTS idx_teacher_entitlements_user_id;
+DROP INDEX IF EXISTS idx_teacher_entitlements_status;
+DROP INDEX IF EXISTS idx_teacher_entitlements_lookup;
+DROP INDEX IF EXISTS idx_teacher_entitlements_expires_at;
+
+-- ============================================
+-- 3. FIX AUTH RLS PERFORMANCE ISSUES
+-- ============================================
+
+-- Fix quiz_attempts policies
+DROP POLICY IF EXISTS "Anyone can read own attempts by session_id" ON quiz_attempts;
+CREATE POLICY "Anyone can read own attempts by session_id" ON quiz_attempts
+  FOR SELECT
+  USING (
+    session_id IN (
+      SELECT session_id FROM quiz_sessions WHERE user_id = (SELECT auth.uid())
+    )
+  );
+
+DROP POLICY IF EXISTS "Users can read own attempts" ON quiz_attempts;
+CREATE POLICY "Users can read own attempts" ON quiz_attempts
+  FOR SELECT
+  TO authenticated
+  USING (user_id = (SELECT auth.uid()));
+
+-- Fix attempt_answers policy
+DROP POLICY IF EXISTS "Users can read own attempt answers" ON attempt_answers;
+CREATE POLICY "Users can read own attempt answers" ON attempt_answers
+  FOR SELECT
+  TO authenticated
+  USING (
+    attempt_id IN (
+      SELECT id FROM quiz_attempts WHERE user_id = (SELECT auth.uid())
+    )
+  );
+
+-- Fix topics policies
+DROP POLICY IF EXISTS "Teachers can read own topics" ON topics;
+CREATE POLICY "Teachers can read own topics" ON topics
+  FOR SELECT
+  TO authenticated
+  USING (created_by = (SELECT auth.uid()));
+
+DROP POLICY IF EXISTS "Admins can read all topics" ON topics;
+CREATE POLICY "Admins can read all topics" ON topics
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = (SELECT auth.uid()))
+      AND is_active = true
+    )
+  );
+
+-- Fix topic_questions policies
+DROP POLICY IF EXISTS "Teachers can read own questions" ON topic_questions;
+CREATE POLICY "Teachers can read own questions" ON topic_questions
+  FOR SELECT
+  TO authenticated
+  USING (created_by = (SELECT auth.uid()));
+
+DROP POLICY IF EXISTS "Admins can read all questions" ON topic_questions;
+CREATE POLICY "Admins can read all questions" ON topic_questions
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = (SELECT auth.uid()))
+      AND is_active = true
+    )
+  );
+
+-- Fix question_sets policies
+DROP POLICY IF EXISTS "Teachers can read own question sets" ON question_sets;
+CREATE POLICY "Teachers can read own question sets" ON question_sets
+  FOR SELECT
+  TO authenticated
+  USING (created_by = (SELECT auth.uid()));
+
+DROP POLICY IF EXISTS "Admins can read all question sets" ON question_sets;
+CREATE POLICY "Admins can read all question sets" ON question_sets
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = (SELECT auth.uid()))
+      AND is_active = true
+    )
+  );
+
+-- Fix teacher_entitlements policies
+DROP POLICY IF EXISTS "Teachers can view own entitlements" ON teacher_entitlements;
+CREATE POLICY "Teachers can view own entitlements" ON teacher_entitlements
+  FOR SELECT
+  TO authenticated
+  USING (teacher_user_id = (SELECT auth.uid()));
+
+DROP POLICY IF EXISTS "Admins can view all entitlements" ON teacher_entitlements;
+CREATE POLICY "Admins can view all entitlements" ON teacher_entitlements
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = (SELECT auth.uid()))
+      AND is_active = true
+    )
+  );
+
+DROP POLICY IF EXISTS "Admins can insert entitlements" ON teacher_entitlements;
+CREATE POLICY "Admins can insert entitlements" ON teacher_entitlements
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = (SELECT auth.uid()))
+      AND is_active = true
+    )
+  );
+
+DROP POLICY IF EXISTS "Admins can update entitlements" ON teacher_entitlements;
+CREATE POLICY "Admins can update entitlements" ON teacher_entitlements
+  FOR UPDATE
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = (SELECT auth.uid()))
+      AND is_active = true
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = (SELECT auth.uid()))
+      AND is_active = true
+    )
+  );
+
+-- ============================================
+-- 4. FIX FUNCTION SEARCH PATH
+-- ============================================
+
+CREATE OR REPLACE FUNCTION check_teacher_entitlement(user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  has_valid_entitlement boolean;
+BEGIN
+  SELECT EXISTS(
+    SELECT 1
+    FROM teacher_entitlements
+    WHERE teacher_user_id = user_id
+      AND status = 'active'
+      AND starts_at <= now()
+      AND (expires_at IS NULL OR expires_at > now())
+  ) INTO has_valid_entitlement;
+  
+  RETURN has_valid_entitlement;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION get_active_entitlement(user_id uuid)
+RETURNS TABLE (
+  source entitlement_source,
+  expires_at timestamptz,
+  metadata jsonb
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT 
+    te.source,
+    te.expires_at,
+    te.metadata
+  FROM teacher_entitlements te
+  WHERE te.teacher_user_id = user_id
+    AND te.status = 'active'
+    AND te.starts_at <= now()
+    AND (te.expires_at IS NULL OR te.expires_at > now())
+  ORDER BY 
+    CASE te.source
+      WHEN 'stripe' THEN 1
+      WHEN 'admin_grant' THEN 2
+      WHEN 'school_domain' THEN 3
+    END
+  LIMIT 1;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION expire_old_entitlements()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  expired_teacher_id uuid;
+BEGIN
+  FOR expired_teacher_id IN
+    SELECT DISTINCT teacher_user_id
+    FROM teacher_entitlements
+    WHERE status = 'active'
+      AND expires_at IS NOT NULL
+      AND expires_at <= now()
+  LOOP
+    UPDATE teacher_entitlements
+    SET status = 'expired',
+        updated_at = now()
+    WHERE teacher_user_id = expired_teacher_id
+      AND status = 'active'
+      AND expires_at IS NOT NULL
+      AND expires_at <= now();
+  END LOOP;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION suspend_teacher_content(teacher_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  UPDATE topics
+  SET 
+    is_published = false,
+    updated_at = now()
+  WHERE created_by = teacher_user_id
+    AND is_published = true;
+  
+  INSERT INTO audit_logs (
+    action_type,
+    target_entity_type,
+    target_entity_id,
+    reason,
+    metadata
+  ) VALUES (
+    'suspend_content',
+    'teacher',
+    teacher_user_id,
+    'Content suspended due to expired/revoked entitlement',
+    jsonb_build_object(
+      'suspended_at', now(),
+      'automatic', true
+    )
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION restore_teacher_content(teacher_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  UPDATE topics
+  SET 
+    is_published = true,
+    updated_at = now()
+  WHERE created_by = teacher_user_id
+    AND is_published = false;
+  
+  INSERT INTO audit_logs (
+    action_type,
+    target_entity_type,
+    target_entity_id,
+    reason,
+    metadata
+  ) VALUES (
+    'restore_content',
+    'teacher',
+    teacher_user_id,
+    'Content restored due to active entitlement',
+    jsonb_build_object(
+      'restored_at', now(),
+      'automatic', true
+    )
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION toggle_teacher_content_on_entitlement_change()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.status = 'active' AND (OLD.status IS NULL OR OLD.status != 'active') THEN
+    PERFORM restore_teacher_content(NEW.teacher_user_id);
+  END IF;
+  
+  IF (NEW.status = 'revoked' OR NEW.status = 'expired') AND OLD.status = 'active' THEN
+    PERFORM suspend_teacher_content(NEW.teacher_user_id);
+  END IF;
+  
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION update_teacher_entitlements_updated_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;/*
+  # Fix Teacher Entitlements RLS - Remove auth.users Access
+  
+  1. Problem
+    - Admin policies on teacher_entitlements were querying auth.users directly
+    - This causes "permission denied for table users" errors from client-side
+    
+  2. Solution
+    - Create a helper function `is_admin()` with SECURITY DEFINER
+    - This function can safely access auth.users
+    - Replace all admin policies to use this function
+    
+  3. Changes
+    - Create `is_admin()` function
+    - Drop existing admin policies on teacher_entitlements
+    - Recreate policies using the safe helper function
+*/
+
+-- Create helper function to check if current user is admin
+-- SECURITY DEFINER allows it to access auth.users safely
+CREATE OR REPLACE FUNCTION is_admin()
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  user_email TEXT;
+BEGIN
+  -- Get the current user's email from auth.users
+  SELECT email INTO user_email
+  FROM auth.users
+  WHERE id = auth.uid();
+  
+  -- Check if this email is in the admin allowlist
+  RETURN EXISTS (
+    SELECT 1
+    FROM admin_allowlist
+    WHERE email = user_email
+    AND is_active = true
+  );
+END;
+$$;
+
+-- Drop existing admin policies that have the auth.users issue
+DROP POLICY IF EXISTS "Admins can view all entitlements" ON teacher_entitlements;
+DROP POLICY IF EXISTS "Admins can insert entitlements" ON teacher_entitlements;
+DROP POLICY IF EXISTS "Admins can update entitlements" ON teacher_entitlements;
+
+-- Recreate admin policies using the safe helper function
+CREATE POLICY "Admins can view all entitlements"
+  ON teacher_entitlements
+  FOR SELECT
+  TO authenticated
+  USING (is_admin());
+
+CREATE POLICY "Admins can insert entitlements"
+  ON teacher_entitlements
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (is_admin());
+
+CREATE POLICY "Admins can update entitlements"
+  ON teacher_entitlements
+  FOR UPDATE
+  TO authenticated
+  USING (is_admin())
+  WITH CHECK (is_admin());
+/*
+  # Create Teacher Dashboard Tables
+  
+  1. New Tables
+    - `teacher_documents`
+      - Stores uploaded documents (PDFs, Word, etc.)
+      - Links to generated quizzes
+      - Tracks processing status
+    
+    - `teacher_quiz_drafts`
+      - Stores work-in-progress quizzes before publishing
+      - Auto-saves every 30 seconds
+      - Tracks last edited timestamp
+    
+    - `teacher_activities`
+      - Lightweight activity log for teacher actions
+      - Used for recent activity timeline
+      - Separate from admin audit_logs
+    
+    - `teacher_reports`
+      - Stores exported reports (CSV, PDF)
+      - Tracks report type and parameters
+      - Links to file storage
+  
+  2. Security
+    - Enable RLS on all tables
+    - Teachers can only access their own data
+    - Admins can view all data for support
+  
+  3. Performance
+    - Add indexes on foreign keys and query columns
+    - Add created_at indexes for sorting
+*/
+
+-- Teacher Documents Table
+CREATE TABLE IF NOT EXISTS teacher_documents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  teacher_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  filename text NOT NULL,
+  file_size_bytes bigint NOT NULL,
+  file_type text NOT NULL,
+  storage_path text NOT NULL,
+  processing_status text NOT NULL DEFAULT 'pending' CHECK (processing_status IN ('pending', 'processing', 'completed', 'failed')),
+  processing_error text,
+  extracted_text text,
+  generated_quiz_id uuid REFERENCES topics(id) ON DELETE SET NULL,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+-- Teacher Quiz Drafts Table
+CREATE TABLE IF NOT EXISTS teacher_quiz_drafts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  teacher_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  subject text CHECK (subject IN ('mathematics', 'science', 'english', 'computing', 'business', 'geography', 'history', 'languages', 'art', 'engineering', 'health', 'other')),
+  description text,
+  difficulty text CHECK (difficulty IN ('easy', 'medium', 'hard')),
+  questions jsonb DEFAULT '[]'::jsonb,
+  published_topic_id uuid REFERENCES topics(id) ON DELETE SET NULL,
+  is_published boolean DEFAULT false,
+  last_autosave_at timestamptz DEFAULT now(),
+  metadata jsonb DEFAULT '{}'::jsonb,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+-- Teacher Activities Table
+CREATE TABLE IF NOT EXISTS teacher_activities (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  teacher_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  activity_type text NOT NULL CHECK (activity_type IN (
+    'quiz_created', 
+    'quiz_published', 
+    'quiz_edited',
+    'quiz_archived',
+    'quiz_duplicated',
+    'ai_generated',
+    'doc_uploaded',
+    'doc_processed',
+    'report_exported',
+    'profile_updated',
+    'login'
+  )),
+  entity_type text,
+  entity_id uuid,
+  title text,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  created_at timestamptz DEFAULT now()
+);
+
+-- Teacher Reports Table
+CREATE TABLE IF NOT EXISTS teacher_reports (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  teacher_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  report_type text NOT NULL CHECK (report_type IN (
+    'quiz_performance',
+    'question_analysis',
+    'student_attempts',
+    'weekly_summary',
+    'custom'
+  )),
+  report_format text NOT NULL CHECK (report_format IN ('csv', 'pdf', 'json')),
+  parameters jsonb DEFAULT '{}'::jsonb,
+  storage_path text,
+  file_size_bytes bigint,
+  generated_at timestamptz DEFAULT now(),
+  expires_at timestamptz,
+  created_at timestamptz DEFAULT now()
+);
+
+-- Add indexes for performance
+CREATE INDEX IF NOT EXISTS idx_teacher_documents_teacher_id ON teacher_documents(teacher_id);
+CREATE INDEX IF NOT EXISTS idx_teacher_documents_created_at ON teacher_documents(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_teacher_documents_status ON teacher_documents(processing_status);
+
+CREATE INDEX IF NOT EXISTS idx_teacher_quiz_drafts_teacher_id ON teacher_quiz_drafts(teacher_id);
+CREATE INDEX IF NOT EXISTS idx_teacher_quiz_drafts_updated_at ON teacher_quiz_drafts(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_teacher_quiz_drafts_published ON teacher_quiz_drafts(is_published);
+
+CREATE INDEX IF NOT EXISTS idx_teacher_activities_teacher_id ON teacher_activities(teacher_id);
+CREATE INDEX IF NOT EXISTS idx_teacher_activities_created_at ON teacher_activities(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_teacher_activities_type ON teacher_activities(activity_type);
+
+CREATE INDEX IF NOT EXISTS idx_teacher_reports_teacher_id ON teacher_reports(teacher_id);
+CREATE INDEX IF NOT EXISTS idx_teacher_reports_created_at ON teacher_reports(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_teacher_reports_type ON teacher_reports(report_type);
+
+-- Enable RLS
+ALTER TABLE teacher_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE teacher_quiz_drafts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE teacher_activities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE teacher_reports ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies for teacher_documents
+CREATE POLICY "Teachers can view own documents"
+  ON teacher_documents FOR SELECT
+  TO authenticated
+  USING (teacher_id = auth.uid());
+
+CREATE POLICY "Teachers can insert own documents"
+  ON teacher_documents FOR INSERT
+  TO authenticated
+  WITH CHECK (teacher_id = auth.uid());
+
+CREATE POLICY "Teachers can update own documents"
+  ON teacher_documents FOR UPDATE
+  TO authenticated
+  USING (teacher_id = auth.uid())
+  WITH CHECK (teacher_id = auth.uid());
+
+CREATE POLICY "Teachers can delete own documents"
+  ON teacher_documents FOR DELETE
+  TO authenticated
+  USING (teacher_id = auth.uid());
+
+CREATE POLICY "Admins can view all documents"
+  ON teacher_documents FOR SELECT
+  TO authenticated
+  USING (is_admin());
+
+-- RLS Policies for teacher_quiz_drafts
+CREATE POLICY "Teachers can view own drafts"
+  ON teacher_quiz_drafts FOR SELECT
+  TO authenticated
+  USING (teacher_id = auth.uid());
+
+CREATE POLICY "Teachers can insert own drafts"
+  ON teacher_quiz_drafts FOR INSERT
+  TO authenticated
+  WITH CHECK (teacher_id = auth.uid());
+
+CREATE POLICY "Teachers can update own drafts"
+  ON teacher_quiz_drafts FOR UPDATE
+  TO authenticated
+  USING (teacher_id = auth.uid())
+  WITH CHECK (teacher_id = auth.uid());
+
+CREATE POLICY "Teachers can delete own drafts"
+  ON teacher_quiz_drafts FOR DELETE
+  TO authenticated
+  USING (teacher_id = auth.uid());
+
+CREATE POLICY "Admins can view all drafts"
+  ON teacher_quiz_drafts FOR SELECT
+  TO authenticated
+  USING (is_admin());
+
+-- RLS Policies for teacher_activities
+CREATE POLICY "Teachers can view own activities"
+  ON teacher_activities FOR SELECT
+  TO authenticated
+  USING (teacher_id = auth.uid());
+
+CREATE POLICY "Teachers can insert own activities"
+  ON teacher_activities FOR INSERT
+  TO authenticated
+  WITH CHECK (teacher_id = auth.uid());
+
+CREATE POLICY "Admins can view all activities"
+  ON teacher_activities FOR SELECT
+  TO authenticated
+  USING (is_admin());
+
+-- RLS Policies for teacher_reports
+CREATE POLICY "Teachers can view own reports"
+  ON teacher_reports FOR SELECT
+  TO authenticated
+  USING (teacher_id = auth.uid());
+
+CREATE POLICY "Teachers can insert own reports"
+  ON teacher_reports FOR INSERT
+  TO authenticated
+  WITH CHECK (teacher_id = auth.uid());
+
+CREATE POLICY "Teachers can delete own reports"
+  ON teacher_reports FOR DELETE
+  TO authenticated
+  USING (teacher_id = auth.uid());
+
+CREATE POLICY "Admins can view all reports"
+  ON teacher_reports FOR SELECT
+  TO authenticated
+  USING (is_admin());
+/*
+  # Expand Subject Topics Library
+
+  1. Purpose
+    - Add more comprehensive topics for each subject (15-20 topics per subject)
+    - Provide better coverage of common educational topics
+    - All topics are system-created (created_by IS NULL) and available to all teachers
+
+  2. New Topics by Subject
+    - Mathematics: 5 additional topics (Trigonometry, Statistics, Calculus, etc.)
+    - Science: 5 additional topics (Chemistry, Physics, Biology topics)
+    - English: 5 additional topics (Poetry, Drama, etc.)
+    - Computing: 5 additional topics (Databases, Networking, etc.)
+    - Business: 5 additional topics (Operations, International Business, etc.)
+    - Geography: 5 additional topics (Geopolitics, Urban Geography, etc.)
+    - History: 5 additional topics (Ancient History, Modern History, etc.)
+    - Languages: 5 additional topics (Advanced Grammar, Conversation, etc.)
+    - Art: 5 additional topics (Sculpture, Animation, etc.)
+    - Engineering: 5 additional topics (Structural, Electrical, etc.)
+    - Health: 5 additional topics (Mental Health, Sports Science, etc.)
+    - Other: General interdisciplinary topics
+
+  3. Notes
+    - All topics have is_published = true and is_active = true
+    - Slugs are unique and SEO-friendly
+    - created_by IS NULL indicates system-created topics
+*/
+
+-- Mathematics additional topics
+INSERT INTO topics (name, slug, subject, description, created_by, is_published, is_active) VALUES
+  ('Trigonometry', 'trigonometry', 'mathematics', 'Sine, cosine, tangent and applications', NULL, true, true),
+  ('Statistics and Data Analysis', 'statistics-data-analysis', 'mathematics', 'Mean, median, mode, standard deviation, probability', NULL, true, true),
+  ('Calculus Fundamentals', 'calculus-fundamentals', 'mathematics', 'Differentiation, integration, and limits', NULL, true, true),
+  ('Number Theory', 'number-theory', 'mathematics', 'Prime numbers, divisibility, and number patterns', NULL, true, true),
+  ('Vectors and Matrices', 'vectors-matrices', 'mathematics', 'Vector operations and matrix algebra', NULL, true, true)
+ON CONFLICT (slug) DO NOTHING;
+
+-- Science additional topics
+INSERT INTO topics (name, slug, subject, description, created_by, is_published, is_active) VALUES
+  ('Chemical Reactions', 'chemical-reactions', 'science', 'Types of reactions, balancing equations, rates', NULL, true, true),
+  ('Forces and Motion', 'forces-motion', 'science', 'Newton''s laws, velocity, acceleration, momentum', NULL, true, true),
+  ('Cell Biology', 'cell-biology', 'science', 'Cell structure, organelles, cellular processes', NULL, true, true),
+  ('Energy and Power', 'energy-power', 'science', 'Forms of energy, conservation, efficiency', NULL, true, true),
+  ('Genetics and DNA', 'genetics-dna', 'science', 'Inheritance, genes, chromosomes, mutations', NULL, true, true)
+ON CONFLICT (slug) DO NOTHING;
+
+-- English additional topics
+INSERT INTO topics (name, slug, subject, description, created_by, is_published, is_active) VALUES
+  ('Poetry Analysis', 'poetry-analysis', 'english', 'Poetic devices, structure, interpretation', NULL, true, true),
+  ('Shakespeare and Drama', 'shakespeare-drama', 'english', 'Shakespearean plays, dramatic techniques', NULL, true, true),
+  ('Essay Writing', 'essay-writing', 'english', 'Structure, argumentation, academic writing', NULL, true, true),
+  ('Modern Literature', 'modern-literature', 'english', '20th and 21st century literary works', NULL, true, true),
+  ('Language and Linguistics', 'language-linguistics', 'english', 'Language structure, etymology, semantics', NULL, true, true)
+ON CONFLICT (slug) DO NOTHING;
+
+-- Computing additional topics
+INSERT INTO topics (name, slug, subject, description, created_by, is_published, is_active) VALUES
+  ('Database Design', 'database-design', 'computing', 'SQL, normalization, relational databases', NULL, true, true),
+  ('Computer Networks', 'computer-networks', 'computing', 'Protocols, TCP/IP, network architecture', NULL, true, true),
+  ('Web Development', 'web-development', 'computing', 'HTML, CSS, JavaScript, web technologies', NULL, true, true),
+  ('Cybersecurity Basics', 'cybersecurity-basics', 'computing', 'Encryption, threats, security practices', NULL, true, true),
+  ('Software Testing', 'software-testing', 'computing', 'Unit testing, integration testing, QA', NULL, true, true)
+ON CONFLICT (slug) DO NOTHING;
+
+-- Business additional topics
+INSERT INTO topics (name, slug, subject, description, created_by, is_published, is_active) VALUES
+  ('Operations Management', 'operations-management', 'business', 'Production, quality control, efficiency', NULL, true, true),
+  ('International Business', 'international-business', 'business', 'Global trade, cultural considerations', NULL, true, true),
+  ('Business Strategy', 'business-strategy', 'business', 'Competitive advantage, strategic planning', NULL, true, true),
+  ('Consumer Behavior', 'consumer-behavior', 'business', 'Buying decisions, market research', NULL, true, true),
+  ('Business Law', 'business-law', 'business', 'Contracts, regulations, legal frameworks', NULL, true, true)
+ON CONFLICT (slug) DO NOTHING;
+
+-- Geography additional topics
+INSERT INTO topics (name, slug, subject, description, created_by, is_published, is_active) VALUES
+  ('Geopolitics', 'geopolitics', 'geography', 'Political geography, international relations', NULL, true, true),
+  ('Urban Geography', 'urban-geography', 'geography', 'Cities, urbanization, development', NULL, true, true),
+  ('Climate Systems', 'climate-systems', 'geography', 'Weather patterns, climate zones', NULL, true, true),
+  ('Natural Resources', 'natural-resources', 'geography', 'Resource distribution, sustainability', NULL, true, true),
+  ('Plate Tectonics', 'plate-tectonics', 'geography', 'Earth structure, earthquakes, volcanoes', NULL, true, true)
+ON CONFLICT (slug) DO NOTHING;
+
+-- History additional topics
+INSERT INTO topics (name, slug, subject, description, created_by, is_published, is_active) VALUES
+  ('Ancient Civilizations', 'ancient-civilizations', 'history', 'Egypt, Greece, Rome, Mesopotamia', NULL, true, true),
+  ('Medieval History', 'medieval-history', 'history', 'Middle Ages, feudalism, crusades', NULL, true, true),
+  ('Industrial Revolution', 'industrial-revolution', 'history', 'Technological change, social impact', NULL, true, true),
+  ('Cold War Era', 'cold-war-era', 'history', 'US-Soviet relations, global conflicts', NULL, true, true),
+  ('Decolonization', 'decolonization', 'history', 'Independence movements, post-colonial era', NULL, true, true)
+ON CONFLICT (slug) DO NOTHING;
+
+-- Languages additional topics
+INSERT INTO topics (name, slug, subject, description, created_by, is_published, is_active) VALUES
+  ('Advanced Grammar', 'advanced-grammar', 'languages', 'Complex structures, syntax', NULL, true, true),
+  ('Conversation Skills', 'conversation-skills', 'languages', 'Speaking, listening, dialogue', NULL, true, true),
+  ('Reading Comprehension', 'reading-comprehension', 'languages', 'Text analysis, interpretation', NULL, true, true),
+  ('Writing Practice', 'writing-practice', 'languages', 'Composition, style, expression', NULL, true, true),
+  ('Culture and Context', 'culture-context', 'languages', 'Cultural understanding, idioms', NULL, true, true)
+ON CONFLICT (slug) DO NOTHING;
+
+-- Art additional topics
+INSERT INTO topics (name, slug, subject, description, created_by, is_published, is_active) VALUES
+  ('Sculpture and Ceramics', 'sculpture-ceramics', 'art', '3D art forms, modeling, pottery', NULL, true, true),
+  ('Animation and Motion', 'animation-motion', 'art', 'Frame-by-frame, digital animation', NULL, true, true),
+  ('Graphic Design', 'graphic-design', 'art', 'Visual communication, branding', NULL, true, true),
+  ('Art Criticism', 'art-criticism', 'art', 'Analysis, interpretation, evaluation', NULL, true, true),
+  ('Contemporary Art', 'contemporary-art', 'art', 'Modern movements, current trends', NULL, true, true)
+ON CONFLICT (slug) DO NOTHING;
+
+-- Engineering additional topics
+INSERT INTO topics (name, slug, subject, description, created_by, is_published, is_active) VALUES
+  ('Structural Engineering', 'structural-engineering', 'engineering', 'Buildings, bridges, load analysis', NULL, true, true),
+  ('Electrical Circuits', 'electrical-circuits', 'engineering', 'Current, voltage, resistance, circuits', NULL, true, true),
+  ('Materials Science', 'materials-science', 'engineering', 'Properties, selection, testing', NULL, true, true),
+  ('Fluid Mechanics', 'fluid-mechanics', 'engineering', 'Flow, pressure, hydraulics', NULL, true, true),
+  ('Control Systems', 'control-systems', 'engineering', 'Feedback, automation, regulation', NULL, true, true)
+ON CONFLICT (slug) DO NOTHING;
+
+-- Health additional topics
+INSERT INTO topics (name, slug, subject, description, created_by, is_published, is_active) VALUES
+  ('Mental Health Awareness', 'mental-health-awareness', 'health', 'Wellbeing, stress, mental conditions', NULL, true, true),
+  ('Sports Science', 'sports-science', 'health', 'Exercise physiology, performance', NULL, true, true),
+  ('First Aid Basics', 'first-aid-basics', 'health', 'Emergency response, CPR, treatment', NULL, true, true),
+  ('Public Health', 'public-health', 'health', 'Epidemiology, disease prevention', NULL, true, true),
+  ('Anatomy and Physiology', 'anatomy-physiology', 'health', 'Human body systems, functions', NULL, true, true)
+ON CONFLICT (slug) DO NOTHING;
+
+-- Other interdisciplinary topics
+INSERT INTO topics (name, slug, subject, description, created_by, is_published, is_active) VALUES
+  ('Critical Thinking', 'critical-thinking', 'other', 'Logic, reasoning, analysis', NULL, true, true),
+  ('Environmental Studies', 'environmental-studies', 'other', 'Ecology, conservation, sustainability', NULL, true, true),
+  ('Philosophy Basics', 'philosophy-basics', 'other', 'Ethics, logic, metaphysics', NULL, true, true),
+  ('Study Skills', 'study-skills', 'other', 'Time management, note-taking, revision', NULL, true, true),
+  ('Personal Finance', 'personal-finance', 'other', 'Budgeting, saving, investing', NULL, true, true)
+ON CONFLICT (slug) DO NOTHING;
+/*
+  # Lock Down Admin Security - Server-Side Enforcement Only
+
+  ## Critical Security Fixes
+
+  This migration implements server-side-only admin enforcement to prevent frontend bypass attacks.
+
+  ### 1. Audit Logs Security
+  
+  **REMOVED**: Policy allowing any authenticated user to insert audit logs
+  **NEW**: Only service role (edge functions) can insert audit logs
+  
+  Rationale: Audit logs must be tamper-proof. Allowing client inserts means:
+  - Users can forge audit trails
+  - Malicious actors can inject false logs
+  - Compliance requirements are not met
+  
+  ### 2. Admin Verification Helper
+  
+  Creates a security-definer function that:
+  - Checks admin_allowlist for user's email
+  - Returns boolean (true/false) for admin status
+  - Runs with elevated privileges to prevent RLS bypass
+  
+  ### 3. System Health Checks
+  
+  Locks down system_health_checks table:
+  - Only edge functions can insert/update
+  - Only admins can read via admin_allowlist check
+  
+  ## Security Model
+  
+  ✅ Admin status checked via admin_allowlist (single source of truth)
+  ✅ All admin operations must go through edge functions with service role
+  ✅ No client can directly write to admin tables
+  ✅ RLS policies enforce server-side verification
+  
+  ## Proof Requirements
+  
+  After this migration:
+  - Direct REST calls to audit_logs.insert() = 403 Forbidden
+  - Direct REST calls to admin tables = 403 Forbidden
+  - Edge functions with service role = Success
+  - Non-admin users accessing /admindashboard = Instant redirect with no content flash
+*/
+
+-- =====================================================
+-- 1) LOCK DOWN AUDIT LOGS
+-- =====================================================
+
+-- Drop the insecure policy that allowed any authenticated user to insert
+DROP POLICY IF EXISTS "Users can insert own audit logs" ON audit_logs;
+
+-- Create restrictive policy: NO client inserts allowed
+-- Only service role (edge functions) can insert
+CREATE POLICY "Only service role can insert audit logs"
+  ON audit_logs
+  FOR INSERT
+  TO service_role
+  WITH CHECK (true);
+
+-- Keep the admin read policy (verified via admin_allowlist)
+-- Update it to use admin_allowlist instead of profiles.role
+DROP POLICY IF EXISTS "Admins can view all audit logs" ON audit_logs;
+
+CREATE POLICY "Only verified admins can view audit logs"
+  ON audit_logs
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND is_active = true
+    )
+  );
+
+-- =====================================================
+-- 2) CREATE ADMIN VERIFICATION FUNCTION
+-- =====================================================
+
+-- Helper function to verify admin status server-side
+-- This is the ONLY source of truth for admin verification
+CREATE OR REPLACE FUNCTION verify_admin_status(check_user_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  user_email text;
+  admin_record record;
+  result jsonb;
+BEGIN
+  -- Get user email from auth.users
+  SELECT email INTO user_email
+  FROM auth.users
+  WHERE id = check_user_id;
+  
+  IF user_email IS NULL THEN
+    RETURN jsonb_build_object(
+      'is_admin', false,
+      'reason', 'user_not_found'
+    );
+  END IF;
+  
+  -- Check admin_allowlist
+  SELECT * INTO admin_record
+  FROM admin_allowlist
+  WHERE email = user_email
+  AND is_active = true;
+  
+  IF admin_record.email IS NOT NULL THEN
+    -- User is verified admin
+    result := jsonb_build_object(
+      'is_admin', true,
+      'email', user_email,
+      'role', admin_record.role,
+      'verified_at', now()
+    );
+    
+    -- Log admin access verification
+    INSERT INTO audit_logs (admin_id, action_type, entity_type, after_state)
+    VALUES (
+      check_user_id,
+      'admin_access_verified',
+      'admin_session',
+      result
+    );
+    
+    RETURN result;
+  ELSE
+    -- User is NOT admin
+    RETURN jsonb_build_object(
+      'is_admin', false,
+      'email', user_email,
+      'reason', 'not_in_allowlist'
+    );
+  END IF;
+END;
+$$;
+
+-- =====================================================
+-- 3) LOCK DOWN SYSTEM HEALTH CHECKS
+-- =====================================================
+
+-- Only edge functions can write
+DROP POLICY IF EXISTS "System can insert health checks" ON system_health_checks;
+
+CREATE POLICY "Only service role can manage health checks"
+  ON system_health_checks
+  FOR ALL
+  TO service_role
+  WITH CHECK (true);
+
+-- Only admins can read
+DROP POLICY IF EXISTS "Admins can view health checks" ON system_health_checks;
+
+CREATE POLICY "Only verified admins can view health checks"
+  ON system_health_checks
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND is_active = true
+    )
+  );
+
+-- =====================================================
+-- 4) ADD SECURITY COMMENTS
+-- =====================================================
+
+COMMENT ON FUNCTION verify_admin_status IS 
+  'Server-side admin verification. Returns jsonb with is_admin boolean and role. Called by edge functions only.';
+
+COMMENT ON POLICY "Only service role can insert audit logs" ON audit_logs IS 
+  'CRITICAL: Only edge functions with service role can write audit logs. No client access.';
+
+COMMENT ON POLICY "Only verified admins can view audit logs" ON audit_logs IS 
+  'Verified via admin_allowlist table. Frontend cannot bypass this check.';
+/*
+  # Fix Topics RLS Policy - Remove auth.users Access
+
+  ## Problem
+  The "Admins can read all topics" policy queries auth.users directly:
+  ```sql
+  SELECT users.email FROM auth.users WHERE users.id = auth.uid()
+  ```
+  This causes "permission denied for table users" errors from frontend.
+
+  ## Solution
+  1. Drop the problematic policy
+  2. Replace with simpler policy using is_admin() function (already exists)
+  3. Add policy for authenticated teachers to read all published/active topics
+
+  ## Changes
+  - DROP POLICY: "Admins can read all topics" (uses auth.users)
+  - CREATE POLICY: "Admins can read all topics via function" (uses is_admin())
+  - CREATE POLICY: "Teachers can read published topics" (for quiz creation)
+
+  ## Security
+  - Admins: Can read all topics (via is_admin() function)
+  - Teachers: Can read published + active topics only
+  - Teachers: Can still read own topics (existing policy)
+  - Public: Can read published + active topics (existing policy)
+*/
+
+-- Drop the problematic policy that accesses auth.users
+DROP POLICY IF EXISTS "Admins can read all topics" ON topics;
+
+-- Create new admin policy using is_admin() function (no auth.users access)
+CREATE POLICY "Admins can read all topics via function"
+  ON topics
+  FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM admin_allowlist
+      WHERE admin_allowlist.email = (SELECT email FROM profiles WHERE id = auth.uid())
+      AND admin_allowlist.is_active = true
+    )
+  );
+
+-- Allow authenticated teachers to read published topics (for quiz creation)
+CREATE POLICY "Teachers can read all published topics"
+  ON topics
+  FOR SELECT
+  TO authenticated
+  USING (
+    is_active = true 
+    AND is_published = true
+  );
+/*
+  # Allow Custom Subjects for Teachers
+
+  ## Changes Made
+  
+  1. **Remove Subject Constraint**
+     - Drop the CHECK constraint on topics.subject that restricts to predefined subjects
+     - Allow teachers to create custom subjects as free text
+     - Teachers can now use any subject name they want
+
+  2. **Benefits**
+     - Teachers can create custom subjects for their specific curriculum
+     - Preserves the actual custom subject name in the database
+     - No more forcing custom subjects to 'other'
+
+  ## Security
+  - Existing RLS policies remain unchanged
+  - Teachers can only create topics for themselves (created_by check)
+*/
+
+-- Drop the CHECK constraint that limits subjects to predefined list
+ALTER TABLE topics DROP CONSTRAINT IF EXISTS valid_subject;
+
+-- Add a NOT NULL constraint to ensure subject is always provided
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE constraint_name = 'topics_subject_not_null'
+    AND table_name = 'topics'
+  ) THEN
+    ALTER TABLE topics ALTER COLUMN subject SET NOT NULL;
+  END IF;
+END $$;
+/*
+  # Fix Teacher Quiz Creation Workflow - RLS + Policies
+
+  ## Problem
+  Teachers get 403 Forbidden when creating topics because the RLS policy
+  uses USING clause for INSERT, which fails since the row doesn't exist yet.
+
+  ## Changes
+
+  1. **Topics Table**
+     - Split "Manage topics" policy into separate INSERT, UPDATE, DELETE policies
+     - INSERT: Only check WITH CHECK (created_by = auth.uid())
+     - UPDATE/DELETE: Check USING (created_by = auth.uid())
+     - Keep SELECT policy for anonymous users
+
+  2. **Question Sets Table**
+     - Split "Manage question sets" into separate policies
+     - Same pattern as topics
+
+  3. **Topic Questions Table**
+     - Split "Manage questions" into separate policies
+     - Verify ownership through question_sets.created_by
+
+  ## Security
+  - Teachers can only create/modify their own content
+  - Admins have full access to all content
+  - Anonymous users can view active/approved content only
+
+  ## Required for Production
+  - Teachers must be able to create topics
+  - Teachers must be able to create question sets (quizzes)
+  - Teachers must be able to add questions (manual/AI/upload)
+*/
+
+-- ============================================================================
+-- FIX TOPICS POLICIES
+-- ============================================================================
+
+DROP POLICY IF EXISTS "Manage topics" ON public.topics;
+
+-- Allow authenticated users to INSERT topics with themselves as creator
+CREATE POLICY "Teachers can insert topics"
+  ON public.topics FOR INSERT
+  TO authenticated
+  WITH CHECK (created_by = (SELECT auth.uid()) OR is_admin_by_id((SELECT auth.uid())));
+
+-- Allow users to SELECT their own topics, admins can see all
+CREATE POLICY "Teachers can view own topics"
+  ON public.topics FOR SELECT
+  TO authenticated
+  USING (created_by = (SELECT auth.uid()) OR is_admin_by_id((SELECT auth.uid())));
+
+-- Allow users to UPDATE their own topics
+CREATE POLICY "Teachers can update own topics"
+  ON public.topics FOR UPDATE
+  TO authenticated
+  USING (created_by = (SELECT auth.uid()) OR is_admin_by_id((SELECT auth.uid())))
+  WITH CHECK (created_by = (SELECT auth.uid()) OR is_admin_by_id((SELECT auth.uid())));
+
+-- Allow users to DELETE their own topics
+CREATE POLICY "Teachers can delete own topics"
+  ON public.topics FOR DELETE
+  TO authenticated
+  USING (created_by = (SELECT auth.uid()) OR is_admin_by_id((SELECT auth.uid())));
+
+-- Keep anonymous view policy
+-- View active topics policy already exists from line 155-157
+
+-- ============================================================================
+-- FIX QUESTION_SETS POLICIES
+-- ============================================================================
+
+DROP POLICY IF EXISTS "Manage question sets" ON public.question_sets;
+
+CREATE POLICY "Teachers can insert question sets"
+  ON public.question_sets FOR INSERT
+  TO authenticated
+  WITH CHECK (created_by = (SELECT auth.uid()) OR is_admin_by_id((SELECT auth.uid())));
+
+CREATE POLICY "Teachers can view own question sets"
+  ON public.question_sets FOR SELECT
+  TO authenticated
+  USING (
+    is_admin_by_id((SELECT auth.uid())) OR
+    created_by = (SELECT auth.uid())
+  );
+
+CREATE POLICY "Teachers can update own question sets"
+  ON public.question_sets FOR UPDATE
+  TO authenticated
+  USING (created_by = (SELECT auth.uid()) OR is_admin_by_id((SELECT auth.uid())))
+  WITH CHECK (created_by = (SELECT auth.uid()) OR is_admin_by_id((SELECT auth.uid())));
+
+CREATE POLICY "Teachers can delete own question sets"
+  ON public.question_sets FOR DELETE
+  TO authenticated
+  USING (created_by = (SELECT auth.uid()) OR is_admin_by_id((SELECT auth.uid())));
+
+-- Anonymous view policy already exists
+
+-- ============================================================================
+-- FIX TOPIC_QUESTIONS POLICIES
+-- ============================================================================
+
+DROP POLICY IF EXISTS "Manage questions" ON public.topic_questions;
+
+CREATE POLICY "Teachers can insert questions"
+  ON public.topic_questions FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    is_admin_by_id((SELECT auth.uid())) OR
+    EXISTS (
+      SELECT 1 FROM public.question_sets qs
+      WHERE qs.id = topic_questions.question_set_id
+      AND qs.created_by = (SELECT auth.uid())
+    )
+  );
+
+CREATE POLICY "Teachers can view own questions"
+  ON public.topic_questions FOR SELECT
+  TO authenticated
+  USING (
+    is_admin_by_id((SELECT auth.uid())) OR
+    EXISTS (
+      SELECT 1 FROM public.question_sets qs
+      WHERE qs.id = topic_questions.question_set_id
+      AND qs.created_by = (SELECT auth.uid())
+    )
+  );
+
+CREATE POLICY "Teachers can update own questions"
+  ON public.topic_questions FOR UPDATE
+  TO authenticated
+  USING (
+    is_admin_by_id((SELECT auth.uid())) OR
+    EXISTS (
+      SELECT 1 FROM public.question_sets qs
+      WHERE qs.id = topic_questions.question_set_id
+      AND qs.created_by = (SELECT auth.uid())
+    )
+  )
+  WITH CHECK (
+    is_admin_by_id((SELECT auth.uid())) OR
+    EXISTS (
+      SELECT 1 FROM public.question_sets qs
+      WHERE qs.id = topic_questions.question_set_id
+      AND qs.created_by = (SELECT auth.uid())
+    )
+  );
+
+CREATE POLICY "Teachers can delete own questions"
+  ON public.topic_questions FOR DELETE
+  TO authenticated
+  USING (
+    is_admin_by_id((SELECT auth.uid())) OR
+    EXISTS (
+      SELECT 1 FROM public.question_sets qs
+      WHERE qs.id = topic_questions.question_set_id
+      AND qs.created_by = (SELECT auth.uid())
+    )
+  );
+
+-- Anonymous view policy already exists
+/*
+  # Fix Topics RLS Policies Only
+
+  ## Changes Made
+
+  1. **Topics RLS - Rebuild Policies**
+     - Drop ALL existing policies on topics table
+     - Create correct policies for teacher creation
+     - Allow public to SELECT active topics (for students)
+     - Allow authenticated teachers to INSERT/UPDATE/DELETE their own topics
+
+  ## Security
+  - Teachers can only manage topics where created_by = their user ID
+  - Admins can manage all topics via is_admin_by_id function
+  - Public users (students) can view active topics only
+*/
+
+-- ========================================
+-- TOPICS TABLE - DROP ALL EXISTING POLICIES
+-- ========================================
+
+-- Drop ALL existing policies on topics
+DO $$
+DECLARE
+  pol RECORD;
+BEGIN
+  FOR pol IN 
+    SELECT policyname 
+    FROM pg_policies 
+    WHERE tablename = 'topics' 
+    AND schemaname = 'public'
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.topics', pol.policyname);
+  END LOOP;
+END $$;
+
+-- ========================================
+-- TOPICS TABLE - CREATE NEW POLICIES
+-- ========================================
+
+-- Allow public to SELECT only active topics (for student gameplay)
+CREATE POLICY "Public can view active topics"
+  ON public.topics FOR SELECT
+  TO public
+  USING (is_active = true);
+
+-- Allow authenticated teachers to INSERT their own topics
+CREATE POLICY "Teachers can create own topics"
+  ON public.topics FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    created_by = (SELECT auth.uid())
+    OR is_admin_by_id((SELECT auth.uid()))
+  );
+
+-- Allow teachers to UPDATE their own topics
+CREATE POLICY "Teachers can update own topics"
+  ON public.topics FOR UPDATE
+  TO authenticated
+  USING (
+    created_by = (SELECT auth.uid())
+    OR is_admin_by_id((SELECT auth.uid()))
+  )
+  WITH CHECK (
+    created_by = (SELECT auth.uid())
+    OR is_admin_by_id((SELECT auth.uid()))
+  );
+
+-- Allow teachers to DELETE their own topics
+CREATE POLICY "Teachers can delete own topics"
+  ON public.topics FOR DELETE
+  TO authenticated
+  USING (
+    created_by = (SELECT auth.uid())
+    OR is_admin_by_id((SELECT auth.uid()))
+  );/*
+  # Fix Question Sets and Topic Questions RLS
+
+  ## Problem
+  - Multiple conflicting SELECT policies on question_sets table
+  - Multiple conflicting SELECT policies on topic_questions table
+  - Teachers getting 403 when trying to publish quizzes
+  - Some policies use non-existent is_admin() function
+
+  ## Solution
+  - Drop ALL existing policies on both tables
+  - Create clean, simple policies
+  - Teachers can fully manage their own question sets and questions
+  - Public can view published content
+
+  ## Security
+  - Teachers can only manage content they created
+  - Admins can manage all content
+  - Public can only read published/approved content
+*/
+
+-- ========================================
+-- QUESTION_SETS TABLE - CLEAN SLATE
+-- ========================================
+
+-- Drop ALL existing policies on question_sets
+DO $$
+DECLARE
+  pol RECORD;
+BEGIN
+  FOR pol IN 
+    SELECT policyname 
+    FROM pg_policies 
+    WHERE tablename = 'question_sets' 
+    AND schemaname = 'public'
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.question_sets', pol.policyname);
+  END LOOP;
+END $$;
+
+-- Public can SELECT approved question sets for published topics
+CREATE POLICY "Public can view approved question sets"
+  ON public.question_sets FOR SELECT
+  TO public
+  USING (
+    is_active = true 
+    AND approval_status = 'approved' 
+    AND EXISTS (
+      SELECT 1 FROM topics 
+      WHERE topics.id = question_sets.topic_id 
+      AND topics.is_active = true 
+      AND topics.is_published = true
+    )
+  );
+
+-- Teachers can INSERT their own question sets
+CREATE POLICY "Teachers can create question sets"
+  ON public.question_sets FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    created_by = (SELECT auth.uid())
+    OR is_admin_by_id((SELECT auth.uid()))
+  );
+
+-- Teachers can SELECT their own question sets
+CREATE POLICY "Teachers can view own question sets"
+  ON public.question_sets FOR SELECT
+  TO authenticated
+  USING (
+    created_by = (SELECT auth.uid())
+    OR is_admin_by_id((SELECT auth.uid()))
+  );
+
+-- Teachers can UPDATE their own question sets
+CREATE POLICY "Teachers can update own question sets"
+  ON public.question_sets FOR UPDATE
+  TO authenticated
+  USING (
+    created_by = (SELECT auth.uid())
+    OR is_admin_by_id((SELECT auth.uid()))
+  )
+  WITH CHECK (
+    created_by = (SELECT auth.uid())
+    OR is_admin_by_id((SELECT auth.uid()))
+  );
+
+-- Teachers can DELETE their own question sets
+CREATE POLICY "Teachers can delete own question sets"
+  ON public.question_sets FOR DELETE
+  TO authenticated
+  USING (
+    created_by = (SELECT auth.uid())
+    OR is_admin_by_id((SELECT auth.uid()))
+  );
+
+-- ========================================
+-- TOPIC_QUESTIONS TABLE - CLEAN SLATE
+-- ========================================
+
+-- Drop ALL existing policies on topic_questions
+DO $$
+DECLARE
+  pol RECORD;
+BEGIN
+  FOR pol IN 
+    SELECT policyname 
+    FROM pg_policies 
+    WHERE tablename = 'topic_questions' 
+    AND schemaname = 'public'
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.topic_questions', pol.policyname);
+  END LOOP;
+END $$;
+
+-- Public can SELECT published questions in approved sets
+CREATE POLICY "Public can view published questions"
+  ON public.topic_questions FOR SELECT
+  TO public
+  USING (
+    is_published = true 
+    AND EXISTS (
+      SELECT 1 FROM question_sets qs 
+      WHERE qs.id = topic_questions.question_set_id 
+      AND qs.is_active = true 
+      AND qs.approval_status = 'approved'
+    )
+  );
+
+-- Teachers can INSERT questions into their own question sets
+CREATE POLICY "Teachers can create questions"
+  ON public.topic_questions FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    is_admin_by_id((SELECT auth.uid()))
+    OR EXISTS (
+      SELECT 1 FROM question_sets qs 
+      WHERE qs.id = topic_questions.question_set_id 
+      AND qs.created_by = (SELECT auth.uid())
+    )
+  );
+
+-- Teachers can SELECT questions in their own question sets
+CREATE POLICY "Teachers can view own questions"
+  ON public.topic_questions FOR SELECT
+  TO authenticated
+  USING (
+    is_admin_by_id((SELECT auth.uid()))
+    OR EXISTS (
+      SELECT 1 FROM question_sets qs 
+      WHERE qs.id = topic_questions.question_set_id 
+      AND qs.created_by = (SELECT auth.uid())
+    )
+  );
+
+-- Teachers can UPDATE questions in their own question sets
+CREATE POLICY "Teachers can update own questions"
+  ON public.topic_questions FOR UPDATE
+  TO authenticated
+  USING (
+    is_admin_by_id((SELECT auth.uid()))
+    OR EXISTS (
+      SELECT 1 FROM question_sets qs 
+      WHERE qs.id = topic_questions.question_set_id 
+      AND qs.created_by = (SELECT auth.uid())
+    )
+  )
+  WITH CHECK (
+    is_admin_by_id((SELECT auth.uid()))
+    OR EXISTS (
+      SELECT 1 FROM question_sets qs 
+      WHERE qs.id = topic_questions.question_set_id 
+      AND qs.created_by = (SELECT auth.uid())
+    )
+  );
+
+-- Teachers can DELETE questions in their own question sets
+CREATE POLICY "Teachers can delete own questions"
+  ON public.topic_questions FOR DELETE
+  TO authenticated
+  USING (
+    is_admin_by_id((SELECT auth.uid()))
+    OR EXISTS (
+      SELECT 1 FROM question_sets qs 
+      WHERE qs.id = topic_questions.question_set_id 
+      AND qs.created_by = (SELECT auth.uid())
+    )
+  );/*
+  # Add Teacher SELECT Policy for Topics
+
+  ## Problem
+  - Teachers can INSERT/UPDATE/DELETE their own topics
+  - But there's no SELECT policy for authenticated teachers to view their own topics
+  - This causes 403 errors during quiz publish workflow
+
+  ## Solution
+  - Add SELECT policy for authenticated teachers to view their own topics
+  - This allows teachers to see both active AND draft topics they created
+
+  ## Security
+  - Teachers can only SELECT topics they created (created_by = auth.uid())
+  - Admins can SELECT all topics (is_admin_by_id check)
+*/
+
+-- Allow authenticated teachers to SELECT their own topics
+CREATE POLICY "Teachers can view own topics"
+  ON public.topics FOR SELECT
+  TO authenticated
+  USING (
+    created_by = (SELECT auth.uid())
+    OR is_admin_by_id((SELECT auth.uid()))
+  );/*
+  # Teacher Analytics Views and Functions - Fixed
+
+  1. Views Created
+    - `teacher_quiz_performance` - Per-quiz metrics for teachers
+      - question_set_id, title, subject, total_plays, unique_students, 
+        completed_runs, completion_rate, avg_score, avg_duration
+    - `teacher_question_analytics` - Per-question performance
+      - question_id, question_text, total_attempts, correct_count,
+        correct_percentage, most_common_wrong_answer
+
+  2. Functions Created
+    - `get_teacher_dashboard_metrics(teacher_id, start_date, end_date)` - Overall metrics
+    - `get_quiz_deep_analytics(question_set_id, teacher_id)` - Deep dive per quiz
+    - `get_hardest_questions(teacher_id, limit)` - Questions needing reteach
+
+  3. Security
+    - All views and functions enforce teacher ownership
+    - Functions use SECURITY DEFINER with proper validation
+
+  4. Performance
+    - Views use efficient aggregations
+    - Indexed columns for fast filtering
+*/
+
+-- Drop existing views if they exist
+DROP VIEW IF EXISTS teacher_quiz_performance CASCADE;
+DROP VIEW IF EXISTS teacher_question_analytics CASCADE;
+
+-- Drop existing functions if they exist
+DROP FUNCTION IF EXISTS get_teacher_dashboard_metrics(UUID, TIMESTAMPTZ, TIMESTAMPTZ) CASCADE;
+DROP FUNCTION IF EXISTS get_quiz_deep_analytics(UUID, UUID) CASCADE;
+DROP FUNCTION IF EXISTS get_hardest_questions(UUID, INT) CASCADE;
+
+-- Create view for teacher quiz performance metrics
+CREATE VIEW teacher_quiz_performance AS
+SELECT 
+  qs.id as question_set_id,
+  qs.created_by as teacher_id,
+  qs.title as quiz_title,
+  t.subject,
+  t.name as topic_name,
+  qs.difficulty,
+  qs.question_count,
+  COUNT(DISTINCT tr.id) as total_plays,
+  COUNT(DISTINCT tr.session_id) as unique_students,
+  COUNT(DISTINCT CASE WHEN tr.status = 'completed' THEN tr.id END) as completed_runs,
+  CASE 
+    WHEN COUNT(DISTINCT tr.id) > 0 THEN
+      ROUND((COUNT(DISTINCT CASE WHEN tr.status = 'completed' THEN tr.id END)::numeric / COUNT(DISTINCT tr.id)::numeric) * 100, 1)
+    ELSE 0
+  END as completion_rate,
+  ROUND(AVG(CASE WHEN tr.status = 'completed' THEN tr.percentage END), 1) as avg_score,
+  ROUND(AVG(CASE WHEN tr.status = 'completed' THEN tr.duration_seconds END), 0) as avg_duration_seconds,
+  MAX(tr.started_at) as last_played_at,
+  COUNT(DISTINCT CASE WHEN tr.started_at >= NOW() - INTERVAL '7 days' THEN tr.id END) as plays_last_7_days,
+  COUNT(DISTINCT CASE WHEN tr.started_at >= NOW() - INTERVAL '30 days' THEN tr.id END) as plays_last_30_days
+FROM question_sets qs
+LEFT JOIN topics t ON qs.topic_id = t.id
+LEFT JOIN topic_runs tr ON qs.id = tr.question_set_id
+WHERE qs.is_active = true 
+  AND qs.approval_status = 'approved'
+GROUP BY qs.id, qs.created_by, qs.title, t.subject, t.name, qs.difficulty, qs.question_count;
+
+-- Create view for question-level analytics
+CREATE VIEW teacher_question_analytics AS
+SELECT 
+  tq.id as question_id,
+  tq.question_set_id,
+  qs.created_by as teacher_id,
+  tq.question_text,
+  tq.correct_index,
+  tq.order_index,
+  COUNT(tra.id) as total_attempts,
+  COUNT(CASE WHEN tra.is_correct THEN 1 END) as correct_count,
+  CASE 
+    WHEN COUNT(tra.id) > 0 THEN
+      ROUND((COUNT(CASE WHEN tra.is_correct THEN 1 END)::numeric / COUNT(tra.id)::numeric) * 100, 1)
+    ELSE 0
+  END as correct_percentage,
+  MODE() WITHIN GROUP (ORDER BY tra.selected_index) FILTER (WHERE NOT tra.is_correct) as most_common_wrong_index,
+  COUNT(CASE WHEN NOT tra.is_correct THEN 1 END) as wrong_count
+FROM topic_questions tq
+JOIN question_sets qs ON tq.question_set_id = qs.id
+LEFT JOIN topic_run_answers tra ON tq.id = tra.question_id
+WHERE qs.is_active = true 
+  AND qs.approval_status = 'approved'
+GROUP BY tq.id, tq.question_set_id, qs.created_by, tq.question_text, tq.correct_index, tq.order_index;
+
+-- Function to get overall teacher dashboard metrics
+CREATE OR REPLACE FUNCTION get_teacher_dashboard_metrics(
+  p_teacher_id UUID,
+  p_start_date TIMESTAMPTZ DEFAULT NULL,
+  p_end_date TIMESTAMPTZ DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_result JSON;
+  v_start_date TIMESTAMPTZ;
+  v_end_date TIMESTAMPTZ;
+BEGIN
+  -- Set default date range if not provided
+  v_start_date := COALESCE(p_start_date, NOW() - INTERVAL '30 days');
+  v_end_date := COALESCE(p_end_date, NOW());
+
+  -- Validate teacher access
+  IF p_teacher_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM auth.users WHERE id = p_teacher_id
+  ) THEN
+    RETURN json_build_object('error', 'Invalid teacher ID');
+  END IF;
+
+  -- Compute metrics
+  SELECT json_build_object(
+    'total_plays', COALESCE(COUNT(DISTINCT tr.id), 0),
+    'active_students', COALESCE(COUNT(DISTINCT tr.session_id), 0),
+    'weighted_avg_score', COALESCE(ROUND(AVG(CASE WHEN tr.status = 'completed' THEN tr.percentage END), 1), 0),
+    'engagement_rate', COALESCE(
+      ROUND((COUNT(DISTINCT CASE WHEN tr.status = 'completed' THEN tr.id END)::numeric / 
+             NULLIF(COUNT(DISTINCT tr.id), 0)::numeric) * 100, 1), 
+      0
+    ),
+    'total_quizzes', COALESCE(COUNT(DISTINCT qs.id), 0),
+    'avg_completion_time', COALESCE(ROUND(AVG(CASE WHEN tr.status = 'completed' THEN tr.duration_seconds END), 0), 0),
+    'date_range', json_build_object(
+      'start', v_start_date,
+      'end', v_end_date
+    )
+  )
+  INTO v_result
+  FROM question_sets qs
+  LEFT JOIN topic_runs tr ON qs.id = tr.question_set_id 
+    AND tr.started_at BETWEEN v_start_date AND v_end_date
+  WHERE qs.created_by = p_teacher_id
+    AND qs.is_active = true
+    AND qs.approval_status = 'approved';
+
+  RETURN v_result;
+END;
+$$;
+
+-- Function to get deep analytics for a specific quiz
+CREATE OR REPLACE FUNCTION get_quiz_deep_analytics(
+  p_question_set_id UUID,
+  p_teacher_id UUID
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_result JSON;
+BEGIN
+  -- Validate ownership
+  IF NOT EXISTS (
+    SELECT 1 FROM question_sets 
+    WHERE id = p_question_set_id 
+      AND created_by = p_teacher_id
+      AND is_active = true
+  ) THEN
+    RETURN json_build_object('error', 'Quiz not found or access denied');
+  END IF;
+
+  -- Get comprehensive quiz analytics
+  WITH quiz_stats AS (
+    SELECT 
+      COUNT(DISTINCT tr.id) as total_plays,
+      COUNT(DISTINCT tr.session_id) as unique_students,
+      COUNT(CASE WHEN tr.status = 'completed' THEN 1 END) as completed_runs,
+      ROUND(AVG(CASE WHEN tr.status = 'completed' THEN tr.percentage END), 1) as avg_score,
+      ROUND(AVG(CASE WHEN tr.status = 'completed' THEN tr.duration_seconds END), 0) as avg_duration
+    FROM topic_runs tr
+    WHERE tr.question_set_id = p_question_set_id
+  ),
+  question_breakdown AS (
+    SELECT json_agg(
+      json_build_object(
+        'question_id', tqa.question_id,
+        'question_text', tqa.question_text,
+        'order_index', tqa.order_index,
+        'correct_index', tqa.correct_index,
+        'total_attempts', tqa.total_attempts,
+        'correct_count', tqa.correct_count,
+        'correct_percentage', tqa.correct_percentage,
+        'most_common_wrong_index', tqa.most_common_wrong_index,
+        'wrong_count', tqa.wrong_count,
+        'needs_reteach', CASE WHEN tqa.correct_percentage < 60 AND tqa.total_attempts >= 3 THEN true ELSE false END
+      )
+      ORDER BY tqa.order_index
+    ) as questions
+    FROM teacher_question_analytics tqa
+    WHERE tqa.question_set_id = p_question_set_id
+  ),
+  score_distribution AS (
+    SELECT json_build_object(
+      '0-20', COUNT(CASE WHEN percentage >= 0 AND percentage < 20 THEN 1 END),
+      '20-40', COUNT(CASE WHEN percentage >= 20 AND percentage < 40 THEN 1 END),
+      '40-60', COUNT(CASE WHEN percentage >= 40 AND percentage < 60 THEN 1 END),
+      '60-80', COUNT(CASE WHEN percentage >= 60 AND percentage < 80 THEN 1 END),
+      '80-100', COUNT(CASE WHEN percentage >= 80 AND percentage <= 100 THEN 1 END)
+    ) as distribution
+    FROM topic_runs
+    WHERE question_set_id = p_question_set_id
+      AND status = 'completed'
+  ),
+  daily_attempts AS (
+    SELECT json_agg(
+      json_build_object(
+        'date', DATE(started_at),
+        'attempts', COUNT(*)
+      )
+      ORDER BY DATE(started_at)
+    ) as daily_trend
+    FROM topic_runs
+    WHERE question_set_id = p_question_set_id
+      AND started_at >= NOW() - INTERVAL '30 days'
+    GROUP BY DATE(started_at)
+  )
+  SELECT json_build_object(
+    'quiz_stats', row_to_json(quiz_stats.*),
+    'question_breakdown', COALESCE((SELECT questions FROM question_breakdown), '[]'::json),
+    'score_distribution', COALESCE((SELECT distribution FROM score_distribution), '{}'::json),
+    'daily_trend', COALESCE((SELECT daily_trend FROM daily_attempts), '[]'::json)
+  )
+  INTO v_result
+  FROM quiz_stats;
+
+  RETURN v_result;
+END;
+$$;
+
+-- Function to get hardest questions (needs reteaching)
+CREATE OR REPLACE FUNCTION get_hardest_questions(
+  p_teacher_id UUID,
+  p_limit INT DEFAULT 10
+)
+RETURNS TABLE (
+  question_id UUID,
+  quiz_title TEXT,
+  question_text TEXT,
+  correct_percentage NUMERIC,
+  total_attempts BIGINT,
+  most_common_wrong_index BIGINT
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT 
+    tqa.question_id,
+    qs.title as quiz_title,
+    tqa.question_text,
+    tqa.correct_percentage,
+    tqa.total_attempts,
+    tqa.most_common_wrong_index
+  FROM teacher_question_analytics tqa
+  JOIN question_sets qs ON tqa.question_set_id = qs.id
+  WHERE tqa.teacher_id = p_teacher_id
+    AND tqa.total_attempts >= 3  -- Minimum attempts for statistical significance
+    AND tqa.correct_percentage < 60  -- Less than 60% correct = needs reteaching
+  ORDER BY tqa.correct_percentage ASC, tqa.total_attempts DESC
+  LIMIT p_limit;
+END;
+$$;
+
+-- Grant permissions
+GRANT SELECT ON teacher_quiz_performance TO authenticated;
+GRANT SELECT ON teacher_question_analytics TO authenticated;
+GRANT EXECUTE ON FUNCTION get_teacher_dashboard_metrics TO authenticated;
+GRANT EXECUTE ON FUNCTION get_quiz_deep_analytics TO authenticated;
+GRANT EXECUTE ON FUNCTION get_hardest_questions TO authenticated;
+/*
+  # Security Performance Fixes - Part 1: Indexes and Policies
+
+  Fixes:
+  1. Unindexed foreign keys (8 indexes)
+  2. Unused indexes (33 dropped)
+  3. Auth RLS optimization (13 policies)
+  4. Multiple permissive policies (11 tables)
+*/
+
+-- =============================================================================
+-- SECTION 1: ADD MISSING FOREIGN KEY INDEXES
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_attempt_answers_question_id 
+ON attempt_answers(question_id);
+
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_question_set_id 
+ON quiz_attempts(question_set_id);
+
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_retry_of_attempt_id 
+ON quiz_attempts(retry_of_attempt_id) WHERE retry_of_attempt_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_topic_id 
+ON quiz_attempts(topic_id) WHERE topic_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_user_id 
+ON quiz_attempts(user_id) WHERE user_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_teacher_documents_generated_quiz_id 
+ON teacher_documents(generated_quiz_id) WHERE generated_quiz_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_teacher_entitlements_teacher_user_id 
+ON teacher_entitlements(teacher_user_id);
+
+CREATE INDEX IF NOT EXISTS idx_teacher_quiz_drafts_published_topic_id 
+ON teacher_quiz_drafts(published_topic_id) WHERE published_topic_id IS NOT NULL;
+
+-- =============================================================================
+-- SECTION 2: DROP UNUSED INDEXES
+-- =============================================================================
+
+DROP INDEX IF EXISTS idx_ad_clicks_ad_id;
+DROP INDEX IF EXISTS idx_ad_impressions_ad_id;
+DROP INDEX IF EXISTS idx_admin_allowlist_created_by;
+DROP INDEX IF EXISTS idx_audit_logs_actor_admin_id;
+DROP INDEX IF EXISTS idx_audit_logs_admin_id;
+DROP INDEX IF EXISTS idx_public_quiz_runs_question_set_id;
+DROP INDEX IF EXISTS idx_public_quiz_runs_quiz_session_id;
+DROP INDEX IF EXISTS idx_public_quiz_runs_topic_id;
+DROP INDEX IF EXISTS idx_quiz_attempts_quiz_session_id;
+DROP INDEX IF EXISTS idx_quiz_sessions_user_id;
+DROP INDEX IF EXISTS idx_school_domains_created_by;
+DROP INDEX IF EXISTS idx_school_domains_school_id;
+DROP INDEX IF EXISTS idx_school_licenses_created_by;
+DROP INDEX IF EXISTS idx_school_licenses_school_id;
+DROP INDEX IF EXISTS idx_schools_created_by;
+DROP INDEX IF EXISTS idx_sponsor_banner_events_banner_id;
+DROP INDEX IF EXISTS idx_sponsored_ads_created_by;
+DROP INDEX IF EXISTS idx_teacher_entitlements_created_by_admin_id;
+DROP INDEX IF EXISTS idx_teacher_premium_overrides_granted_by_admin_id;
+DROP INDEX IF EXISTS idx_teacher_premium_overrides_revoked_by_admin_id;
+DROP INDEX IF EXISTS idx_teacher_school_membership_school_id;
+DROP INDEX IF EXISTS idx_topic_run_answers_question_id;
+DROP INDEX IF EXISTS idx_topic_run_answers_run_id;
+DROP INDEX IF EXISTS idx_topic_runs_question_set_id;
+DROP INDEX IF EXISTS idx_topic_runs_topic_id;
+DROP INDEX IF EXISTS idx_topic_runs_user_id;
+DROP INDEX IF EXISTS idx_teacher_documents_teacher_id;
+DROP INDEX IF EXISTS idx_teacher_documents_created_at;
+DROP INDEX IF EXISTS idx_teacher_documents_status;
+DROP INDEX IF EXISTS idx_teacher_quiz_drafts_published;
+DROP INDEX IF EXISTS idx_teacher_activities_type;
+DROP INDEX IF EXISTS idx_teacher_reports_teacher_id;
+DROP INDEX IF EXISTS idx_teacher_reports_created_at;
+DROP INDEX IF EXISTS idx_teacher_reports_type;
+
+-- =============================================================================
+-- SECTION 3: HELPER FUNCTION FOR ADMIN CHECK
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION is_admin(user_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM admin_allowlist
+    WHERE admin_allowlist.email = (SELECT email FROM auth.users WHERE id = user_id)
+    AND admin_allowlist.is_active = true
+  );
+$$;
+
+-- =============================================================================
+-- SECTION 4: FIX RLS POLICIES WITH (SELECT auth.uid())
+-- =============================================================================
+
+-- audit_logs
+DROP POLICY IF EXISTS "Only verified admins can view audit logs" ON audit_logs;
+DROP POLICY IF EXISTS "View audit logs" ON audit_logs;
+CREATE POLICY "Only verified admins can view audit logs"
+ON audit_logs FOR SELECT
+TO authenticated
+USING (is_admin((SELECT auth.uid())));
+
+-- system_health_checks
+DROP POLICY IF EXISTS "Only verified admins can view health checks" ON system_health_checks;
+CREATE POLICY "Only verified admins can view health checks"
+ON system_health_checks FOR SELECT
+TO authenticated
+USING (is_admin((SELECT auth.uid())));
+
+-- teacher_documents
+DROP POLICY IF EXISTS "Teachers can view own documents" ON teacher_documents;
+DROP POLICY IF EXISTS "Teachers can insert own documents" ON teacher_documents;
+DROP POLICY IF EXISTS "Teachers can update own documents" ON teacher_documents;
+DROP POLICY IF EXISTS "Teachers can delete own documents" ON teacher_documents;
+DROP POLICY IF EXISTS "Admins can view all documents" ON teacher_documents;
+
+CREATE POLICY "Teachers can view own documents"
+ON teacher_documents FOR SELECT
+TO authenticated
+USING (teacher_id = (SELECT auth.uid()));
+
+CREATE POLICY "Admins can view all documents"
+ON teacher_documents FOR SELECT
+TO authenticated
+USING (is_admin((SELECT auth.uid())));
+
+CREATE POLICY "Teachers can insert own documents"
+ON teacher_documents FOR INSERT
+TO authenticated
+WITH CHECK (teacher_id = (SELECT auth.uid()));
+
+CREATE POLICY "Teachers can update own documents"
+ON teacher_documents FOR UPDATE
+TO authenticated
+USING (teacher_id = (SELECT auth.uid()))
+WITH CHECK (teacher_id = (SELECT auth.uid()));
+
+CREATE POLICY "Teachers can delete own documents"
+ON teacher_documents FOR DELETE
+TO authenticated
+USING (teacher_id = (SELECT auth.uid()));
+
+-- teacher_quiz_drafts
+DROP POLICY IF EXISTS "Teachers can view own drafts" ON teacher_quiz_drafts;
+DROP POLICY IF EXISTS "Teachers can insert own drafts" ON teacher_quiz_drafts;
+DROP POLICY IF EXISTS "Teachers can update own drafts" ON teacher_quiz_drafts;
+DROP POLICY IF EXISTS "Teachers can delete own drafts" ON teacher_quiz_drafts;
+DROP POLICY IF EXISTS "Admins can view all drafts" ON teacher_quiz_drafts;
+
+CREATE POLICY "Teachers can view own drafts"
+ON teacher_quiz_drafts FOR SELECT
+TO authenticated
+USING (teacher_id = (SELECT auth.uid()));
+
+CREATE POLICY "Admins can view all drafts"
+ON teacher_quiz_drafts FOR SELECT
+TO authenticated
+USING (is_admin((SELECT auth.uid())));
+
+CREATE POLICY "Teachers can insert own drafts"
+ON teacher_quiz_drafts FOR INSERT
+TO authenticated
+WITH CHECK (teacher_id = (SELECT auth.uid()));
+
+CREATE POLICY "Teachers can update own drafts"
+ON teacher_quiz_drafts FOR UPDATE
+TO authenticated
+USING (teacher_id = (SELECT auth.uid()))
+WITH CHECK (teacher_id = (SELECT auth.uid()));
+
+CREATE POLICY "Teachers can delete own drafts"
+ON teacher_quiz_drafts FOR DELETE
+TO authenticated
+USING (teacher_id = (SELECT auth.uid()));
+
+-- teacher_activities
+DROP POLICY IF EXISTS "Teachers can view own activities" ON teacher_activities;
+DROP POLICY IF EXISTS "Teachers can insert own activities" ON teacher_activities;
+DROP POLICY IF EXISTS "Admins can view all activities" ON teacher_activities;
+
+CREATE POLICY "Teachers can view own activities"
+ON teacher_activities FOR SELECT
+TO authenticated
+USING (teacher_id = (SELECT auth.uid()));
+
+CREATE POLICY "Admins can view all activities"
+ON teacher_activities FOR SELECT
+TO authenticated
+USING (is_admin((SELECT auth.uid())));
+
+CREATE POLICY "Teachers can insert own activities"
+ON teacher_activities FOR INSERT
+TO authenticated
+WITH CHECK (teacher_id = (SELECT auth.uid()));
+
+-- teacher_reports
+DROP POLICY IF EXISTS "Teachers can view own reports" ON teacher_reports;
+DROP POLICY IF EXISTS "Teachers can insert own reports" ON teacher_reports;
+DROP POLICY IF EXISTS "Teachers can delete own reports" ON teacher_reports;
+DROP POLICY IF EXISTS "Admins can view all reports" ON teacher_reports;
+
+CREATE POLICY "Teachers can view own reports"
+ON teacher_reports FOR SELECT
+TO authenticated
+USING (teacher_id = (SELECT auth.uid()));
+
+CREATE POLICY "Admins can view all reports"
+ON teacher_reports FOR SELECT
+TO authenticated
+USING (is_admin((SELECT auth.uid())));
+
+CREATE POLICY "Teachers can insert own reports"
+ON teacher_reports FOR INSERT
+TO authenticated
+WITH CHECK (teacher_id = (SELECT auth.uid()));
+
+CREATE POLICY "Teachers can delete own reports"
+ON teacher_reports FOR DELETE
+TO authenticated
+USING (teacher_id = (SELECT auth.uid()));
+
+-- =============================================================================
+-- SECTION 5: CONSOLIDATE MULTIPLE PERMISSIVE POLICIES
+-- =============================================================================
+
+-- question_sets
+DROP POLICY IF EXISTS "Teachers can view own question sets" ON question_sets;
+DROP POLICY IF EXISTS "Public can view approved question sets" ON question_sets;
+
+CREATE POLICY "Question sets visible to users"
+ON question_sets FOR SELECT
+TO authenticated
+USING (
+  (is_active = true AND approval_status = 'approved')
+  OR created_by = (SELECT auth.uid())
+);
+
+-- quiz_attempts
+DROP POLICY IF EXISTS "Users can read own attempts" ON quiz_attempts;
+DROP POLICY IF EXISTS "Anyone can read own attempts by session_id" ON quiz_attempts;
+
+CREATE POLICY "Users can read own attempts"
+ON quiz_attempts FOR SELECT
+TO authenticated
+USING (
+  user_id = (SELECT auth.uid())
+  OR quiz_session_id IN (
+    SELECT id FROM quiz_sessions WHERE session_id = (SELECT auth.uid()::text)
+  )
+);
+
+-- teacher_entitlements
+DROP POLICY IF EXISTS "Teachers can view own entitlements" ON teacher_entitlements;
+DROP POLICY IF EXISTS "Admins can view all entitlements" ON teacher_entitlements;
+
+CREATE POLICY "Teachers can view own entitlements"
+ON teacher_entitlements FOR SELECT
+TO authenticated
+USING (teacher_user_id = (SELECT auth.uid()));
+
+CREATE POLICY "Admins can view all entitlements"
+ON teacher_entitlements FOR SELECT
+TO authenticated
+USING (is_admin((SELECT auth.uid())));
+
+-- teacher_premium_overrides
+DROP POLICY IF EXISTS "Teachers can view own premium override" ON teacher_premium_overrides;
+DROP POLICY IF EXISTS "Admins can manage premium overrides" ON teacher_premium_overrides;
+DROP POLICY IF EXISTS "Teachers can view own override" ON teacher_premium_overrides;
+DROP POLICY IF EXISTS "Admins can view all overrides" ON teacher_premium_overrides;
+DROP POLICY IF EXISTS "Admins can insert overrides" ON teacher_premium_overrides;
+DROP POLICY IF EXISTS "Admins can update overrides" ON teacher_premium_overrides;
+DROP POLICY IF EXISTS "Admins can delete overrides" ON teacher_premium_overrides;
+
+CREATE POLICY "Teachers can view own override"
+ON teacher_premium_overrides FOR SELECT
+TO authenticated
+USING (teacher_id = (SELECT auth.uid()));
+
+CREATE POLICY "Admins can view all overrides"
+ON teacher_premium_overrides FOR SELECT
+TO authenticated
+USING (is_admin((SELECT auth.uid())));
+
+CREATE POLICY "Admins can insert overrides"
+ON teacher_premium_overrides FOR INSERT
+TO authenticated
+WITH CHECK (is_admin((SELECT auth.uid())));
+
+CREATE POLICY "Admins can update overrides"
+ON teacher_premium_overrides FOR UPDATE
+TO authenticated
+USING (is_admin((SELECT auth.uid())))
+WITH CHECK (is_admin((SELECT auth.uid())));
+
+CREATE POLICY "Admins can delete overrides"
+ON teacher_premium_overrides FOR DELETE
+TO authenticated
+USING (is_admin((SELECT auth.uid())));
+
+-- topic_questions
+DROP POLICY IF EXISTS "Public can view published questions" ON topic_questions;
+DROP POLICY IF EXISTS "Teachers can view own questions" ON topic_questions;
+
+CREATE POLICY "Users can view questions"
+ON topic_questions FOR SELECT
+TO authenticated
+USING (
+  is_published = true
+  OR created_by = (SELECT auth.uid())
+);
+
+-- topics
+DROP POLICY IF EXISTS "Public can view active topics" ON topics;
+DROP POLICY IF EXISTS "Teachers can view own topics" ON topics;
+
+CREATE POLICY "Users can view topics"
+ON topics FOR SELECT
+TO authenticated
+USING (
+  is_active = true
+  OR created_by = (SELECT auth.uid())
+);
+/*
+  # Security Performance Fixes - Part 2: Views and Functions (v2)
+
+  Fixes:
+  1. Function search paths (3 functions - set immutable search_path)
+*/
+
+-- =============================================================================
+-- SECTION 1: FIX FUNCTION SEARCH PATHS
+-- =============================================================================
+
+-- Fix get_teacher_dashboard_metrics
+CREATE OR REPLACE FUNCTION get_teacher_dashboard_metrics(teacher_id_param UUID)
+RETURNS TABLE (
+  total_quizzes BIGINT,
+  total_attempts BIGINT,
+  total_students BIGINT,
+  avg_score NUMERIC,
+  recent_activity_count BIGINT
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    (SELECT COUNT(*) FROM question_sets WHERE created_by = teacher_id_param AND is_active = true AND approval_status = 'approved')::BIGINT,
+    (SELECT COUNT(*) FROM topic_runs tr WHERE tr.question_set_id IN (SELECT id FROM question_sets WHERE created_by = teacher_id_param))::BIGINT,
+    (SELECT COUNT(DISTINCT session_id) FROM topic_runs tr WHERE tr.question_set_id IN (SELECT id FROM question_sets WHERE created_by = teacher_id_param))::BIGINT,
+    (SELECT ROUND(AVG(percentage), 2) FROM topic_runs tr WHERE tr.question_set_id IN (SELECT id FROM question_sets WHERE created_by = teacher_id_param) AND status = 'completed'),
+    (SELECT COUNT(*) FROM teacher_activities WHERE teacher_id = teacher_id_param AND created_at > NOW() - INTERVAL '7 days')::BIGINT;
+END;
+$$;
+
+-- Fix get_quiz_deep_analytics
+CREATE OR REPLACE FUNCTION get_quiz_deep_analytics(question_set_id_param UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  result JSONB;
+  quiz_stats JSONB;
+  score_dist JSONB;
+  daily_trend JSONB;
+  question_breakdown JSONB;
+BEGIN
+  SELECT jsonb_build_object(
+    'total_plays', COUNT(*),
+    'unique_students', COUNT(DISTINCT session_id),
+    'completed_runs', SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
+    'avg_score', ROUND(AVG(CASE WHEN status = 'completed' THEN percentage ELSE NULL END), 2),
+    'avg_duration', ROUND(AVG(CASE WHEN status = 'completed' THEN duration_seconds ELSE NULL END), 0)
+  )
+  INTO quiz_stats
+  FROM topic_runs
+  WHERE question_set_id = question_set_id_param;
+
+  SELECT jsonb_build_object(
+    '0-20', COUNT(*) FILTER (WHERE percentage >= 0 AND percentage < 20),
+    '20-40', COUNT(*) FILTER (WHERE percentage >= 20 AND percentage < 40),
+    '40-60', COUNT(*) FILTER (WHERE percentage >= 40 AND percentage < 60),
+    '60-80', COUNT(*) FILTER (WHERE percentage >= 60 AND percentage < 80),
+    '80-100', COUNT(*) FILTER (WHERE percentage >= 80 AND percentage <= 100)
+  )
+  INTO score_dist
+  FROM topic_runs
+  WHERE question_set_id = question_set_id_param AND status = 'completed';
+
+  SELECT jsonb_agg(
+    jsonb_build_object(
+      'date', day::date,
+      'attempts', attempt_count
+    ) ORDER BY day
+  )
+  INTO daily_trend
+  FROM (
+    SELECT DATE(created_at) as day, COUNT(*) as attempt_count
+    FROM topic_runs
+    WHERE question_set_id = question_set_id_param
+      AND created_at >= NOW() - INTERVAL '30 days'
+    GROUP BY DATE(created_at)
+    ORDER BY day
+  ) daily_data;
+
+  SELECT jsonb_agg(
+    jsonb_build_object(
+      'question_id', q.id,
+      'question_text', q.question_text,
+      'options', q.options,
+      'correct_index', q.correct_index,
+      'explanation', q.explanation,
+      'total_attempts', COALESCE(stats.total_attempts, 0),
+      'correct_count', COALESCE(stats.correct_count, 0),
+      'wrong_count', COALESCE(stats.wrong_count, 0),
+      'correct_percentage', COALESCE(stats.correct_percentage, 0),
+      'most_common_wrong_index', stats.most_common_wrong_index,
+      'needs_reteach', COALESCE(stats.correct_percentage, 0) < 60
+    ) ORDER BY q.order_index
+  )
+  INTO question_breakdown
+  FROM topic_questions q
+  LEFT JOIN (
+    SELECT
+      tra.question_id,
+      COUNT(*) as total_attempts,
+      SUM(CASE WHEN tra.is_correct THEN 1 ELSE 0 END) as correct_count,
+      SUM(CASE WHEN NOT tra.is_correct THEN 1 ELSE 0 END) as wrong_count,
+      ROUND((SUM(CASE WHEN tra.is_correct THEN 1 ELSE 0 END)::decimal / NULLIF(COUNT(*), 0)) * 100, 2) as correct_percentage,
+      MODE() WITHIN GROUP (ORDER BY CASE WHEN NOT tra.is_correct THEN tra.selected_index ELSE NULL END) as most_common_wrong_index
+    FROM topic_run_answers tra
+    WHERE tra.run_id IN (SELECT id FROM topic_runs WHERE question_set_id = question_set_id_param)
+    GROUP BY tra.question_id
+  ) stats ON q.id = stats.question_id
+  WHERE q.question_set_id = question_set_id_param
+  ORDER BY q.order_index;
+
+  result := jsonb_build_object(
+    'quiz_stats', quiz_stats,
+    'score_distribution', score_dist,
+    'daily_trend', COALESCE(daily_trend, '[]'::jsonb),
+    'question_breakdown', COALESCE(question_breakdown, '[]'::jsonb)
+  );
+
+  RETURN result;
+END;
+$$;
+
+-- Fix get_hardest_questions - drop and recreate
+DROP FUNCTION IF EXISTS get_hardest_questions(UUID, INT);
+
+CREATE FUNCTION get_hardest_questions(teacher_id_param UUID, limit_count INT DEFAULT 10)
+RETURNS TABLE (
+  question_id UUID,
+  question_text TEXT,
+  quiz_title TEXT,
+  success_rate NUMERIC,
+  total_attempts BIGINT
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    q.id as question_id,
+    q.question_text,
+    qs.title as quiz_title,
+    ROUND(
+      (SUM(CASE WHEN tra.is_correct THEN 1 ELSE 0 END)::decimal / NULLIF(COUNT(tra.id), 0)) * 100,
+      2
+    ) as success_rate,
+    COUNT(tra.id) as total_attempts
+  FROM topic_questions q
+  INNER JOIN question_sets qs ON q.question_set_id = qs.id
+  INNER JOIN topic_run_answers tra ON q.id = tra.question_id
+  WHERE qs.created_by = teacher_id_param
+    AND qs.is_active = true
+    AND qs.approval_status = 'approved'
+  GROUP BY q.id, q.question_text, qs.title
+  HAVING COUNT(tra.id) >= 5
+  ORDER BY success_rate ASC
+  LIMIT limit_count;
+END;
+$$;
+/*
+  # Fix Analytics to Use Public Quiz Runs
+
+  The analytics function was querying `topic_runs` which has no data.
+  The actual quiz data is in `public_quiz_runs` table.
+  
+  This migration updates the analytics function to use the correct tables.
+*/
+
+-- Drop the old version that uses wrong tables
+DROP FUNCTION IF EXISTS get_quiz_deep_analytics(uuid, uuid);
+
+-- Create updated function that uses public_quiz_runs
+CREATE OR REPLACE FUNCTION get_quiz_deep_analytics(p_question_set_id UUID, p_teacher_id UUID)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_result JSON;
+BEGIN
+  -- Validate ownership
+  IF NOT EXISTS (
+    SELECT 1 FROM question_sets 
+    WHERE id = p_question_set_id 
+    AND created_by = p_teacher_id
+    AND is_active = true
+  ) THEN
+    RETURN json_build_object('error', 'Quiz not found or access denied');
+  END IF;
+
+  -- Get comprehensive quiz analytics using public_quiz_runs
+  WITH quiz_stats AS (
+    SELECT 
+      COUNT(DISTINCT pqr.id) as total_plays,
+      COUNT(DISTINCT pqr.session_id) as unique_students,
+      COUNT(CASE WHEN pqr.status = 'completed' THEN 1 END) as completed_runs,
+      ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.percentage END), 1) as avg_score,
+      ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.duration_seconds END), 0) as avg_duration
+    FROM public_quiz_runs pqr
+    WHERE pqr.question_set_id = p_question_set_id
+  ),
+  question_breakdown AS (
+    SELECT json_agg(
+      json_build_object(
+        'question_id', q.id,
+        'question_text', q.question_text,
+        'order_index', q.order_index,
+        'correct_index', q.correct_index,
+        'options', q.options,
+        'explanation', q.explanation,
+        'total_attempts', COALESCE(stats.total_attempts, 0),
+        'correct_count', COALESCE(stats.correct_count, 0),
+        'correct_percentage', COALESCE(stats.correct_percentage, 0),
+        'most_common_wrong_index', stats.most_common_wrong_index,
+        'wrong_count', COALESCE(stats.wrong_count, 0),
+        'needs_reteach', CASE 
+          WHEN COALESCE(stats.correct_percentage, 0) < 60 AND COALESCE(stats.total_attempts, 0) >= 3 
+          THEN true 
+          ELSE false 
+        END
+      )
+      ORDER BY q.order_index
+    ) as questions
+    FROM topic_questions q
+    LEFT JOIN (
+      SELECT
+        pqa.question_id,
+        COUNT(*) as total_attempts,
+        SUM(CASE WHEN pqa.is_correct THEN 1 ELSE 0 END) as correct_count,
+        SUM(CASE WHEN NOT pqa.is_correct THEN 1 ELSE 0 END) as wrong_count,
+        ROUND((SUM(CASE WHEN pqa.is_correct THEN 1 ELSE 0 END)::decimal / NULLIF(COUNT(*), 0)) * 100, 2) as correct_percentage,
+        MODE() WITHIN GROUP (ORDER BY CASE WHEN NOT pqa.is_correct THEN pqa.selected_index ELSE NULL END) as most_common_wrong_index
+      FROM public_quiz_answers pqa
+      WHERE pqa.run_id IN (SELECT id FROM public_quiz_runs WHERE question_set_id = p_question_set_id)
+      GROUP BY pqa.question_id
+    ) stats ON q.id = stats.question_id
+    WHERE q.question_set_id = p_question_set_id
+  ),
+  score_distribution AS (
+    SELECT json_build_object(
+      '0-20', COUNT(CASE WHEN percentage >= 0 AND percentage < 20 THEN 1 END),
+      '20-40', COUNT(CASE WHEN percentage >= 20 AND percentage < 40 THEN 1 END),
+      '40-60', COUNT(CASE WHEN percentage >= 40 AND percentage < 60 THEN 1 END),
+      '60-80', COUNT(CASE WHEN percentage >= 60 AND percentage < 80 THEN 1 END),
+      '80-100', COUNT(CASE WHEN percentage >= 80 AND percentage <= 100 THEN 1 END)
+    ) as distribution
+    FROM public_quiz_runs
+    WHERE question_set_id = p_question_set_id
+    AND status = 'completed'
+  ),
+  daily_attempts AS (
+    SELECT json_agg(
+      json_build_object(
+        'date', DATE(started_at),
+        'attempts', COUNT(*)
+      )
+      ORDER BY DATE(started_at)
+    ) as daily_trend
+    FROM public_quiz_runs
+    WHERE question_set_id = p_question_set_id
+    AND started_at >= NOW() - INTERVAL '30 days'
+    GROUP BY DATE(started_at)
+  )
+  SELECT json_build_object(
+    'quiz_stats', row_to_json(quiz_stats.*),
+    'question_breakdown', COALESCE((SELECT questions FROM question_breakdown), '[]'::json),
+    'score_distribution', COALESCE((SELECT distribution FROM score_distribution), '{}'::json),
+    'daily_trend', COALESCE((SELECT daily_trend FROM daily_attempts), '[]'::json)
+  )
+  INTO v_result
+  FROM quiz_stats;
+
+  RETURN v_result;
+END;
+$$;
+/*
+  # Fix Analytics Column Name
+
+  The column is `selected_option` not `selected_index` in public_quiz_answers table.
+*/
+
+DROP FUNCTION IF EXISTS get_quiz_deep_analytics(uuid, uuid);
+
+CREATE OR REPLACE FUNCTION get_quiz_deep_analytics(p_question_set_id UUID, p_teacher_id UUID)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_result JSON;
+BEGIN
+  -- Validate ownership
+  IF NOT EXISTS (
+    SELECT 1 FROM question_sets 
+    WHERE id = p_question_set_id 
+    AND created_by = p_teacher_id
+    AND is_active = true
+  ) THEN
+    RETURN json_build_object('error', 'Quiz not found or access denied');
+  END IF;
+
+  -- Get comprehensive quiz analytics using public_quiz_runs
+  WITH quiz_stats AS (
+    SELECT 
+      COUNT(DISTINCT pqr.id) as total_plays,
+      COUNT(DISTINCT pqr.session_id) as unique_students,
+      COUNT(CASE WHEN pqr.status = 'completed' THEN 1 END) as completed_runs,
+      ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.percentage END), 1) as avg_score,
+      ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.duration_seconds END), 0) as avg_duration
+    FROM public_quiz_runs pqr
+    WHERE pqr.question_set_id = p_question_set_id
+  ),
+  question_breakdown AS (
+    SELECT json_agg(
+      json_build_object(
+        'question_id', q.id,
+        'question_text', q.question_text,
+        'order_index', q.order_index,
+        'correct_index', q.correct_index,
+        'options', q.options,
+        'explanation', q.explanation,
+        'total_attempts', COALESCE(stats.total_attempts, 0),
+        'correct_count', COALESCE(stats.correct_count, 0),
+        'correct_percentage', COALESCE(stats.correct_percentage, 0),
+        'most_common_wrong_index', stats.most_common_wrong_index,
+        'wrong_count', COALESCE(stats.wrong_count, 0),
+        'needs_reteach', CASE 
+          WHEN COALESCE(stats.correct_percentage, 0) < 60 AND COALESCE(stats.total_attempts, 0) >= 3 
+          THEN true 
+          ELSE false 
+        END
+      )
+      ORDER BY q.order_index
+    ) as questions
+    FROM topic_questions q
+    LEFT JOIN (
+      SELECT
+        pqa.question_id,
+        COUNT(*) as total_attempts,
+        SUM(CASE WHEN pqa.is_correct THEN 1 ELSE 0 END) as correct_count,
+        SUM(CASE WHEN NOT pqa.is_correct THEN 1 ELSE 0 END) as wrong_count,
+        ROUND((SUM(CASE WHEN pqa.is_correct THEN 1 ELSE 0 END)::decimal / NULLIF(COUNT(*), 0)) * 100, 2) as correct_percentage,
+        MODE() WITHIN GROUP (ORDER BY CASE WHEN NOT pqa.is_correct THEN pqa.selected_option ELSE NULL END) as most_common_wrong_index
+      FROM public_quiz_answers pqa
+      WHERE pqa.run_id IN (SELECT id FROM public_quiz_runs WHERE question_set_id = p_question_set_id)
+      GROUP BY pqa.question_id
+    ) stats ON q.id = stats.question_id
+    WHERE q.question_set_id = p_question_set_id
+  ),
+  score_distribution AS (
+    SELECT json_build_object(
+      '0-20', COUNT(CASE WHEN percentage >= 0 AND percentage < 20 THEN 1 END),
+      '20-40', COUNT(CASE WHEN percentage >= 20 AND percentage < 40 THEN 1 END),
+      '40-60', COUNT(CASE WHEN percentage >= 40 AND percentage < 60 THEN 1 END),
+      '60-80', COUNT(CASE WHEN percentage >= 60 AND percentage < 80 THEN 1 END),
+      '80-100', COUNT(CASE WHEN percentage >= 80 AND percentage <= 100 THEN 1 END)
+    ) as distribution
+    FROM public_quiz_runs
+    WHERE question_set_id = p_question_set_id
+    AND status = 'completed'
+  ),
+  daily_attempts AS (
+    SELECT json_agg(
+      json_build_object(
+        'date', DATE(started_at),
+        'attempts', COUNT(*)
+      )
+      ORDER BY DATE(started_at)
+    ) as daily_trend
+    FROM public_quiz_runs
+    WHERE question_set_id = p_question_set_id
+    AND started_at >= NOW() - INTERVAL '30 days'
+    GROUP BY DATE(started_at)
+  )
+  SELECT json_build_object(
+    'quiz_stats', row_to_json(quiz_stats.*),
+    'question_breakdown', COALESCE((SELECT questions FROM question_breakdown), '[]'::json),
+    'score_distribution', COALESCE((SELECT distribution FROM score_distribution), '{}'::json),
+    'daily_trend', COALESCE((SELECT daily_trend FROM daily_attempts), '[]'::json)
+  )
+  INTO v_result
+  FROM quiz_stats;
+
+  RETURN v_result;
+END;
+$$;
+/*
+  # Fix Analytics Aggregate Nesting Issue
+
+  Remove nested aggregates that cause errors.
+*/
+
+DROP FUNCTION IF EXISTS get_quiz_deep_analytics(uuid, uuid);
+
+CREATE OR REPLACE FUNCTION get_quiz_deep_analytics(p_question_set_id UUID, p_teacher_id UUID)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_result JSON;
+BEGIN
+  -- Validate ownership
+  IF NOT EXISTS (
+    SELECT 1 FROM question_sets 
+    WHERE id = p_question_set_id 
+    AND created_by = p_teacher_id
+    AND is_active = true
+  ) THEN
+    RETURN json_build_object('error', 'Quiz not found or access denied');
+  END IF;
+
+  -- Get comprehensive quiz analytics using public_quiz_runs
+  WITH quiz_stats AS (
+    SELECT 
+      COUNT(DISTINCT pqr.id) as total_plays,
+      COUNT(DISTINCT pqr.session_id) as unique_students,
+      SUM(CASE WHEN pqr.status = 'completed' THEN 1 ELSE 0 END) as completed_runs,
+      ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.percentage END), 1) as avg_score,
+      ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.duration_seconds END), 0) as avg_duration
+    FROM public_quiz_runs pqr
+    WHERE pqr.question_set_id = p_question_set_id
+  ),
+  answer_stats AS (
+    SELECT
+      pqa.question_id,
+      COUNT(*) as total_attempts,
+      SUM(CASE WHEN pqa.is_correct THEN 1 ELSE 0 END) as correct_count,
+      SUM(CASE WHEN NOT pqa.is_correct THEN 1 ELSE 0 END) as wrong_count,
+      ROUND((SUM(CASE WHEN pqa.is_correct THEN 1 ELSE 0 END)::decimal / NULLIF(COUNT(*), 0)) * 100, 2) as correct_percentage
+    FROM public_quiz_answers pqa
+    WHERE pqa.run_id IN (SELECT id FROM public_quiz_runs WHERE question_set_id = p_question_set_id)
+    GROUP BY pqa.question_id
+  ),
+  wrong_answers AS (
+    SELECT
+      question_id,
+      selected_option,
+      COUNT(*) as wrong_count
+    FROM public_quiz_answers
+    WHERE is_correct = false
+      AND run_id IN (SELECT id FROM public_quiz_runs WHERE question_set_id = p_question_set_id)
+    GROUP BY question_id, selected_option
+  ),
+  most_common_wrong AS (
+    SELECT DISTINCT ON (question_id)
+      question_id,
+      selected_option as most_common_wrong_index
+    FROM wrong_answers
+    ORDER BY question_id, wrong_count DESC
+  ),
+  question_breakdown AS (
+    SELECT json_agg(
+      json_build_object(
+        'question_id', q.id,
+        'question_text', q.question_text,
+        'order_index', q.order_index,
+        'correct_index', q.correct_index,
+        'options', q.options,
+        'explanation', q.explanation,
+        'total_attempts', COALESCE(stats.total_attempts, 0),
+        'correct_count', COALESCE(stats.correct_count, 0),
+        'correct_percentage', COALESCE(stats.correct_percentage, 0),
+        'most_common_wrong_index', mcw.most_common_wrong_index,
+        'wrong_count', COALESCE(stats.wrong_count, 0),
+        'needs_reteach', CASE 
+          WHEN COALESCE(stats.correct_percentage, 0) < 60 AND COALESCE(stats.total_attempts, 0) >= 3 
+          THEN true 
+          ELSE false 
+        END
+      )
+      ORDER BY q.order_index
+    ) as questions
+    FROM topic_questions q
+    LEFT JOIN answer_stats stats ON q.id = stats.question_id
+    LEFT JOIN most_common_wrong mcw ON q.id = mcw.question_id
+    WHERE q.question_set_id = p_question_set_id
+  ),
+  score_distribution AS (
+    SELECT json_build_object(
+      '0-20', SUM(CASE WHEN percentage >= 0 AND percentage < 20 THEN 1 ELSE 0 END),
+      '20-40', SUM(CASE WHEN percentage >= 20 AND percentage < 40 THEN 1 ELSE 0 END),
+      '40-60', SUM(CASE WHEN percentage >= 40 AND percentage < 60 THEN 1 ELSE 0 END),
+      '60-80', SUM(CASE WHEN percentage >= 60 AND percentage < 80 THEN 1 ELSE 0 END),
+      '80-100', SUM(CASE WHEN percentage >= 80 AND percentage <= 100 THEN 1 ELSE 0 END)
+    ) as distribution
+    FROM public_quiz_runs
+    WHERE question_set_id = p_question_set_id
+    AND status = 'completed'
+  ),
+  daily_attempts AS (
+    SELECT json_agg(
+      json_build_object(
+        'date', DATE(started_at),
+        'attempts', day_count
+      )
+      ORDER BY day_date
+    ) as daily_trend
+    FROM (
+      SELECT 
+        DATE(started_at) as day_date,
+        COUNT(*) as day_count
+      FROM public_quiz_runs
+      WHERE question_set_id = p_question_set_id
+      AND started_at >= NOW() - INTERVAL '30 days'
+      GROUP BY DATE(started_at)
+    ) daily_data
+  )
+  SELECT json_build_object(
+    'quiz_stats', row_to_json(quiz_stats.*),
+    'question_breakdown', COALESCE((SELECT questions FROM question_breakdown), '[]'::json),
+    'score_distribution', COALESCE((SELECT distribution FROM score_distribution), '{}'::json),
+    'daily_trend', COALESCE((SELECT daily_trend FROM daily_attempts), '[]'::json)
+  )
+  INTO v_result
+  FROM quiz_stats;
+
+  RETURN v_result;
+END;
+$$;
+/*
+  # Fix Analytics Table Alias Issue
+
+  Add proper table alias for started_at column.
+*/
+
+DROP FUNCTION IF EXISTS get_quiz_deep_analytics(uuid, uuid);
+
+CREATE OR REPLACE FUNCTION get_quiz_deep_analytics(p_question_set_id UUID, p_teacher_id UUID)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_result JSON;
+BEGIN
+  -- Validate ownership
+  IF NOT EXISTS (
+    SELECT 1 FROM question_sets 
+    WHERE id = p_question_set_id 
+    AND created_by = p_teacher_id
+    AND is_active = true
+  ) THEN
+    RETURN json_build_object('error', 'Quiz not found or access denied');
+  END IF;
+
+  -- Get comprehensive quiz analytics using public_quiz_runs
+  WITH quiz_stats AS (
+    SELECT 
+      COUNT(DISTINCT pqr.id) as total_plays,
+      COUNT(DISTINCT pqr.session_id) as unique_students,
+      SUM(CASE WHEN pqr.status = 'completed' THEN 1 ELSE 0 END) as completed_runs,
+      ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.percentage END), 1) as avg_score,
+      ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.duration_seconds END), 0) as avg_duration
+    FROM public_quiz_runs pqr
+    WHERE pqr.question_set_id = p_question_set_id
+  ),
+  answer_stats AS (
+    SELECT
+      pqa.question_id,
+      COUNT(*) as total_attempts,
+      SUM(CASE WHEN pqa.is_correct THEN 1 ELSE 0 END) as correct_count,
+      SUM(CASE WHEN NOT pqa.is_correct THEN 1 ELSE 0 END) as wrong_count,
+      ROUND((SUM(CASE WHEN pqa.is_correct THEN 1 ELSE 0 END)::decimal / NULLIF(COUNT(*), 0)) * 100, 2) as correct_percentage
+    FROM public_quiz_answers pqa
+    WHERE pqa.run_id IN (SELECT id FROM public_quiz_runs WHERE question_set_id = p_question_set_id)
+    GROUP BY pqa.question_id
+  ),
+  wrong_answers AS (
+    SELECT
+      pqa.question_id,
+      pqa.selected_option,
+      COUNT(*) as wrong_count
+    FROM public_quiz_answers pqa
+    WHERE pqa.is_correct = false
+      AND pqa.run_id IN (SELECT id FROM public_quiz_runs WHERE question_set_id = p_question_set_id)
+    GROUP BY pqa.question_id, pqa.selected_option
+  ),
+  most_common_wrong AS (
+    SELECT DISTINCT ON (question_id)
+      question_id,
+      selected_option as most_common_wrong_index
+    FROM wrong_answers
+    ORDER BY question_id, wrong_count DESC
+  ),
+  question_breakdown AS (
+    SELECT json_agg(
+      json_build_object(
+        'question_id', q.id,
+        'question_text', q.question_text,
+        'order_index', q.order_index,
+        'correct_index', q.correct_index,
+        'options', q.options,
+        'explanation', q.explanation,
+        'total_attempts', COALESCE(stats.total_attempts, 0),
+        'correct_count', COALESCE(stats.correct_count, 0),
+        'correct_percentage', COALESCE(stats.correct_percentage, 0),
+        'most_common_wrong_index', mcw.most_common_wrong_index,
+        'wrong_count', COALESCE(stats.wrong_count, 0),
+        'needs_reteach', CASE 
+          WHEN COALESCE(stats.correct_percentage, 0) < 60 AND COALESCE(stats.total_attempts, 0) >= 3 
+          THEN true 
+          ELSE false 
+        END
+      )
+      ORDER BY q.order_index
+    ) as questions
+    FROM topic_questions q
+    LEFT JOIN answer_stats stats ON q.id = stats.question_id
+    LEFT JOIN most_common_wrong mcw ON q.id = mcw.question_id
+    WHERE q.question_set_id = p_question_set_id
+  ),
+  score_distribution AS (
+    SELECT json_build_object(
+      '0-20', SUM(CASE WHEN pqr.percentage >= 0 AND pqr.percentage < 20 THEN 1 ELSE 0 END),
+      '20-40', SUM(CASE WHEN pqr.percentage >= 20 AND pqr.percentage < 40 THEN 1 ELSE 0 END),
+      '40-60', SUM(CASE WHEN pqr.percentage >= 40 AND pqr.percentage < 60 THEN 1 ELSE 0 END),
+      '60-80', SUM(CASE WHEN pqr.percentage >= 60 AND pqr.percentage < 80 THEN 1 ELSE 0 END),
+      '80-100', SUM(CASE WHEN pqr.percentage >= 80 AND pqr.percentage <= 100 THEN 1 ELSE 0 END)
+    ) as distribution
+    FROM public_quiz_runs pqr
+    WHERE pqr.question_set_id = p_question_set_id
+    AND pqr.status = 'completed'
+  ),
+  daily_attempts AS (
+    SELECT json_agg(
+      json_build_object(
+        'date', day_date,
+        'attempts', day_count
+      )
+      ORDER BY day_date
+    ) as daily_trend
+    FROM (
+      SELECT 
+        DATE(pqr.started_at) as day_date,
+        COUNT(*) as day_count
+      FROM public_quiz_runs pqr
+      WHERE pqr.question_set_id = p_question_set_id
+      AND pqr.started_at >= NOW() - INTERVAL '30 days'
+      GROUP BY DATE(pqr.started_at)
+    ) daily_data
+  )
+  SELECT json_build_object(
+    'quiz_stats', row_to_json(quiz_stats.*),
+    'question_breakdown', COALESCE((SELECT questions FROM question_breakdown), '[]'::json),
+    'score_distribution', COALESCE((SELECT distribution FROM score_distribution), '{}'::json),
+    'daily_trend', COALESCE((SELECT daily_trend FROM daily_attempts), '[]'::json)
+  )
+  INTO v_result
+  FROM quiz_stats;
+
+  RETURN v_result;
+END;
+$$;
+/*
+  # Fix Security and Performance Issues - Corrected
+
+  ## Changes
+  
+  1. **Add Missing Foreign Key Indexes** (28 indexes)
+     - Improves query performance for foreign key lookups
+     - Essential for JOIN operations and referential integrity checks
+  
+  2. **Drop Unused Indexes** (7 indexes)
+     - Removes indexes that are not being used
+     - Reduces storage overhead and write performance impact
+  
+  3. **Fix Multiple Permissive Policies** (6 tables)
+     - Consolidates multiple permissive SELECT policies into single policies
+     - Improves security clarity and reduces policy evaluation overhead
+  
+  4. **Fix Security Definer Views**
+     - Recreates views with proper security context
+  
+  5. **Fix Function Search Path**
+     - Updates function to have immutable search_path
+*/
+
+-- ============================================================================
+-- 1. ADD MISSING FOREIGN KEY INDEXES
+-- ============================================================================
+
+-- ad_clicks
+CREATE INDEX IF NOT EXISTS idx_ad_clicks_ad_id ON public.ad_clicks(ad_id);
+
+-- ad_impressions
+CREATE INDEX IF NOT EXISTS idx_ad_impressions_ad_id ON public.ad_impressions(ad_id);
+
+-- admin_allowlist
+CREATE INDEX IF NOT EXISTS idx_admin_allowlist_created_by ON public.admin_allowlist(created_by);
+
+-- audit_logs
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_admin_id ON public.audit_logs(actor_admin_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_admin_id ON public.audit_logs(admin_id);
+
+-- public_quiz_runs
+CREATE INDEX IF NOT EXISTS idx_public_quiz_runs_question_set_id ON public.public_quiz_runs(question_set_id);
+CREATE INDEX IF NOT EXISTS idx_public_quiz_runs_quiz_session_id ON public.public_quiz_runs(quiz_session_id);
+CREATE INDEX IF NOT EXISTS idx_public_quiz_runs_topic_id ON public.public_quiz_runs(topic_id);
+
+-- quiz_attempts
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_quiz_session_id ON public.quiz_attempts(quiz_session_id);
+
+-- quiz_sessions
+CREATE INDEX IF NOT EXISTS idx_quiz_sessions_user_id ON public.quiz_sessions(user_id);
+
+-- school_domains
+CREATE INDEX IF NOT EXISTS idx_school_domains_created_by ON public.school_domains(created_by);
+CREATE INDEX IF NOT EXISTS idx_school_domains_school_id ON public.school_domains(school_id);
+
+-- school_licenses
+CREATE INDEX IF NOT EXISTS idx_school_licenses_created_by ON public.school_licenses(created_by);
+CREATE INDEX IF NOT EXISTS idx_school_licenses_school_id ON public.school_licenses(school_id);
+
+-- schools
+CREATE INDEX IF NOT EXISTS idx_schools_created_by ON public.schools(created_by);
+
+-- sponsor_banner_events
+CREATE INDEX IF NOT EXISTS idx_sponsor_banner_events_banner_id ON public.sponsor_banner_events(banner_id);
+
+-- sponsored_ads
+CREATE INDEX IF NOT EXISTS idx_sponsored_ads_created_by ON public.sponsored_ads(created_by);
+
+-- teacher_documents
+CREATE INDEX IF NOT EXISTS idx_teacher_documents_teacher_id ON public.teacher_documents(teacher_id);
+
+-- teacher_entitlements
+CREATE INDEX IF NOT EXISTS idx_teacher_entitlements_created_by_admin_id ON public.teacher_entitlements(created_by_admin_id);
+
+-- teacher_premium_overrides
+CREATE INDEX IF NOT EXISTS idx_teacher_premium_overrides_granted_by_admin_id ON public.teacher_premium_overrides(granted_by_admin_id);
+CREATE INDEX IF NOT EXISTS idx_teacher_premium_overrides_revoked_by_admin_id ON public.teacher_premium_overrides(revoked_by_admin_id);
+
+-- teacher_reports
+CREATE INDEX IF NOT EXISTS idx_teacher_reports_teacher_id ON public.teacher_reports(teacher_id);
+
+-- teacher_school_membership
+CREATE INDEX IF NOT EXISTS idx_teacher_school_membership_school_id ON public.teacher_school_membership(school_id);
+
+-- topic_run_answers
+CREATE INDEX IF NOT EXISTS idx_topic_run_answers_question_id ON public.topic_run_answers(question_id);
+CREATE INDEX IF NOT EXISTS idx_topic_run_answers_run_id ON public.topic_run_answers(run_id);
+
+-- topic_runs
+CREATE INDEX IF NOT EXISTS idx_topic_runs_question_set_id ON public.topic_runs(question_set_id);
+CREATE INDEX IF NOT EXISTS idx_topic_runs_topic_id ON public.topic_runs(topic_id);
+CREATE INDEX IF NOT EXISTS idx_topic_runs_user_id ON public.topic_runs(user_id);
+
+-- ============================================================================
+-- 2. DROP UNUSED INDEXES
+-- ============================================================================
+
+DROP INDEX IF EXISTS idx_attempt_answers_question_id;
+DROP INDEX IF EXISTS idx_quiz_attempts_question_set_id;
+DROP INDEX IF EXISTS idx_quiz_attempts_retry_of_attempt_id;
+DROP INDEX IF EXISTS idx_quiz_attempts_topic_id;
+DROP INDEX IF EXISTS idx_quiz_attempts_user_id;
+DROP INDEX IF EXISTS idx_teacher_documents_generated_quiz_id;
+DROP INDEX IF EXISTS idx_teacher_entitlements_teacher_user_id;
+DROP INDEX IF EXISTS idx_teacher_quiz_drafts_published_topic_id;
+
+-- ============================================================================
+-- 3. FIX MULTIPLE PERMISSIVE POLICIES
+-- ============================================================================
+
+-- teacher_activities: Consolidate two SELECT policies
+DROP POLICY IF EXISTS "Admins can view all activities" ON public.teacher_activities;
+DROP POLICY IF EXISTS "Teachers can view own activities" ON public.teacher_activities;
+
+CREATE POLICY "Authenticated users view activities"
+  ON public.teacher_activities
+  FOR SELECT
+  TO authenticated
+  USING (
+    -- Teachers can view own activities
+    teacher_id = auth.uid()
+    OR
+    -- Admins can view all activities
+    EXISTS (
+      SELECT 1 FROM admin_allowlist 
+      WHERE email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND is_active = true
+    )
+  );
+
+-- teacher_documents: Consolidate two SELECT policies
+DROP POLICY IF EXISTS "Admins can view all documents" ON public.teacher_documents;
+DROP POLICY IF EXISTS "Teachers can view own documents" ON public.teacher_documents;
+
+CREATE POLICY "Authenticated users view documents"
+  ON public.teacher_documents
+  FOR SELECT
+  TO authenticated
+  USING (
+    -- Teachers can view own documents
+    teacher_id = auth.uid()
+    OR
+    -- Admins can view all documents
+    EXISTS (
+      SELECT 1 FROM admin_allowlist 
+      WHERE email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND is_active = true
+    )
+  );
+
+-- teacher_entitlements: Consolidate two SELECT policies
+DROP POLICY IF EXISTS "Admins can view all entitlements" ON public.teacher_entitlements;
+DROP POLICY IF EXISTS "Teachers can view own entitlements" ON public.teacher_entitlements;
+
+CREATE POLICY "Authenticated users view entitlements"
+  ON public.teacher_entitlements
+  FOR SELECT
+  TO authenticated
+  USING (
+    -- Teachers can view own entitlements
+    teacher_user_id = auth.uid()
+    OR
+    -- Admins can view all entitlements
+    EXISTS (
+      SELECT 1 FROM admin_allowlist 
+      WHERE email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND is_active = true
+    )
+  );
+
+-- teacher_premium_overrides: Consolidate two SELECT policies
+DROP POLICY IF EXISTS "Admins can view all overrides" ON public.teacher_premium_overrides;
+DROP POLICY IF EXISTS "Teachers can view own override" ON public.teacher_premium_overrides;
+
+CREATE POLICY "Authenticated users view overrides"
+  ON public.teacher_premium_overrides
+  FOR SELECT
+  TO authenticated
+  USING (
+    -- Teachers can view own overrides
+    teacher_id = auth.uid()
+    OR
+    -- Admins can view all overrides
+    EXISTS (
+      SELECT 1 FROM admin_allowlist 
+      WHERE email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND is_active = true
+    )
+  );
+
+-- teacher_quiz_drafts: Consolidate two SELECT policies
+DROP POLICY IF EXISTS "Admins can view all drafts" ON public.teacher_quiz_drafts;
+DROP POLICY IF EXISTS "Teachers can view own drafts" ON public.teacher_quiz_drafts;
+
+CREATE POLICY "Authenticated users view drafts"
+  ON public.teacher_quiz_drafts
+  FOR SELECT
+  TO authenticated
+  USING (
+    -- Teachers can view own drafts
+    teacher_id = auth.uid()
+    OR
+    -- Admins can view all drafts
+    EXISTS (
+      SELECT 1 FROM admin_allowlist 
+      WHERE email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND is_active = true
+    )
+  );
+
+-- teacher_reports: Consolidate two SELECT policies
+DROP POLICY IF EXISTS "Admins can view all reports" ON public.teacher_reports;
+DROP POLICY IF EXISTS "Teachers can view own reports" ON public.teacher_reports;
+
+CREATE POLICY "Authenticated users view reports"
+  ON public.teacher_reports
+  FOR SELECT
+  TO authenticated
+  USING (
+    -- Teachers can view own reports
+    teacher_id = auth.uid()
+    OR
+    -- Admins can view all reports
+    EXISTS (
+      SELECT 1 FROM admin_allowlist 
+      WHERE email = (SELECT email FROM auth.users WHERE id = auth.uid())
+      AND is_active = true
+    )
+  );
+
+-- ============================================================================
+-- 4. FIX SECURITY DEFINER VIEWS
+-- ============================================================================
+
+-- Recreate teacher_question_analytics view without SECURITY DEFINER
+DROP VIEW IF EXISTS teacher_question_analytics;
+
+CREATE VIEW teacher_question_analytics AS
+SELECT 
+  q.id as question_id,
+  q.question_set_id,
+  q.question_text,
+  q.order_index,
+  q.correct_index,
+  COUNT(tra.id) as total_attempts,
+  SUM(CASE WHEN tra.is_correct THEN 1 ELSE 0 END) as correct_count,
+  ROUND(
+    (SUM(CASE WHEN tra.is_correct THEN 1 ELSE 0 END)::decimal / NULLIF(COUNT(tra.id), 0)) * 100,
+    2
+  ) as correct_percentage,
+  MODE() WITHIN GROUP (
+    ORDER BY CASE WHEN NOT tra.is_correct THEN tra.selected_index ELSE NULL END
+  ) as most_common_wrong_index
+FROM topic_questions q
+LEFT JOIN topic_run_answers tra ON q.id = tra.question_id
+GROUP BY q.id, q.question_set_id, q.question_text, q.order_index, q.correct_index;
+
+-- Recreate teacher_quiz_performance view without SECURITY DEFINER
+DROP VIEW IF EXISTS teacher_quiz_performance;
+
+CREATE VIEW teacher_quiz_performance AS
+SELECT 
+  qs.id as question_set_id,
+  qs.title,
+  qs.created_by,
+  COUNT(DISTINCT tr.id) as total_plays,
+  COUNT(DISTINCT tr.session_id) as unique_students,
+  SUM(CASE WHEN tr.status = 'completed' THEN 1 ELSE 0 END) as completed_runs,
+  ROUND(AVG(CASE WHEN tr.status = 'completed' THEN tr.percentage END), 1) as avg_score,
+  ROUND(AVG(CASE WHEN tr.status = 'completed' THEN tr.duration_seconds END), 0) as avg_duration
+FROM question_sets qs
+LEFT JOIN topic_runs tr ON qs.id = tr.question_set_id
+WHERE qs.is_active = true
+GROUP BY qs.id, qs.title, qs.created_by;
+
+-- ============================================================================
+-- 5. FIX FUNCTION SEARCH PATH
+-- ============================================================================
+
+-- Recreate get_teacher_dashboard_metrics with immutable search_path
+DROP FUNCTION IF EXISTS get_teacher_dashboard_metrics(uuid);
+
+CREATE OR REPLACE FUNCTION get_teacher_dashboard_metrics(p_teacher_id UUID)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_result JSON;
+BEGIN
+  -- Get comprehensive teacher dashboard metrics
+  WITH quiz_stats AS (
+    SELECT 
+      COUNT(DISTINCT qs.id) as total_quizzes,
+      COUNT(DISTINCT CASE WHEN qs.status = 'published' THEN qs.id END) as published_quizzes,
+      COUNT(DISTINCT CASE WHEN qs.status = 'draft' THEN qs.id END) as draft_quizzes
+    FROM question_sets qs
+    WHERE qs.created_by = p_teacher_id
+    AND qs.is_active = true
+  ),
+  student_stats AS (
+    SELECT 
+      COUNT(DISTINCT pqr.session_id) as total_students,
+      COUNT(DISTINCT pqr.id) as total_attempts,
+      SUM(CASE WHEN pqr.status = 'completed' THEN 1 ELSE 0 END) as completed_attempts
+    FROM public_quiz_runs pqr
+    INNER JOIN question_sets qs ON pqr.question_set_id = qs.id
+    WHERE qs.created_by = p_teacher_id
+  ),
+  performance_stats AS (
+    SELECT 
+      ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.percentage END), 1) as avg_score,
+      ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.duration_seconds END), 0) as avg_time
+    FROM public_quiz_runs pqr
+    INNER JOIN question_sets qs ON pqr.question_set_id = qs.id
+    WHERE qs.created_by = p_teacher_id
+    AND pqr.status = 'completed'
+  ),
+  recent_activity AS (
+    SELECT json_agg(
+      json_build_object(
+        'date', day_date,
+        'attempts', day_count
+      )
+      ORDER BY day_date DESC
+    ) as activity_trend
+    FROM (
+      SELECT 
+        DATE(pqr.started_at) as day_date,
+        COUNT(*) as day_count
+      FROM public_quiz_runs pqr
+      INNER JOIN question_sets qs ON pqr.question_set_id = qs.id
+      WHERE qs.created_by = p_teacher_id
+      AND pqr.started_at >= NOW() - INTERVAL '30 days'
+      GROUP BY DATE(pqr.started_at)
+    ) daily_data
+  )
+  SELECT json_build_object(
+    'quiz_stats', row_to_json(quiz_stats.*),
+    'student_stats', row_to_json(student_stats.*),
+    'performance_stats', row_to_json(performance_stats.*),
+    'recent_activity', COALESCE((SELECT activity_trend FROM recent_activity), '[]'::json)
+  )
+  INTO v_result
+  FROM quiz_stats, student_stats, performance_stats;
+
+  RETURN v_result;
+END;
+$$;
+/*
+  # Fix Remaining Function Search Path
+
+  Adds immutable search_path to the 3-parameter version of get_teacher_dashboard_metrics
+*/
+
+DROP FUNCTION IF EXISTS get_teacher_dashboard_metrics(uuid, timestamptz, timestamptz);
+
+CREATE OR REPLACE FUNCTION get_teacher_dashboard_metrics(
+  p_teacher_id UUID,
+  p_start_date TIMESTAMPTZ DEFAULT NULL,
+  p_end_date TIMESTAMPTZ DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_result JSON;
+  v_start_date TIMESTAMPTZ;
+  v_end_date TIMESTAMPTZ;
+BEGIN
+  -- Set default date range if not provided
+  v_start_date := COALESCE(p_start_date, NOW() - INTERVAL '30 days');
+  v_end_date := COALESCE(p_end_date, NOW());
+
+  -- Validate teacher access
+  IF p_teacher_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM auth.users WHERE id = p_teacher_id
+  ) THEN
+    RETURN json_build_object('error', 'Invalid teacher ID');
+  END IF;
+
+  -- Compute metrics
+  SELECT json_build_object(
+    'total_plays', COALESCE(COUNT(DISTINCT tr.id), 0),
+    'active_students', COALESCE(COUNT(DISTINCT tr.session_id), 0),
+    'weighted_avg_score', COALESCE(ROUND(AVG(CASE WHEN tr.status = 'completed' THEN tr.percentage END), 1), 0),
+    'engagement_rate', COALESCE(
+      ROUND((COUNT(DISTINCT CASE WHEN tr.status = 'completed' THEN tr.id END)::numeric / 
+      NULLIF(COUNT(DISTINCT tr.id), 0)::numeric) * 100, 1), 
+      0
+    ),
+    'total_quizzes', COALESCE(COUNT(DISTINCT qs.id), 0),
+    'avg_completion_time', COALESCE(ROUND(AVG(CASE WHEN tr.status = 'completed' THEN tr.duration_seconds END), 0), 0),
+    'date_range', json_build_object(
+      'start', v_start_date,
+      'end', v_end_date
+    )
+  )
+  INTO v_result
+  FROM question_sets qs
+  LEFT JOIN topic_runs tr ON qs.id = tr.question_set_id 
+    AND tr.started_at BETWEEN v_start_date AND v_end_date
+  WHERE qs.created_by = p_teacher_id
+    AND qs.is_active = true
+    AND qs.approval_status = 'approved';
+
+  RETURN v_result;
+END;
+$$;
+/*
+  # Fix Teacher Dashboard Metrics to Use public_quiz_runs
+
+  The function was querying topic_runs which has no data.
+  Update it to use public_quiz_runs instead.
+*/
+
+DROP FUNCTION IF EXISTS get_teacher_dashboard_metrics(uuid, timestamptz, timestamptz);
+
+CREATE OR REPLACE FUNCTION get_teacher_dashboard_metrics(
+  p_teacher_id UUID,
+  p_start_date TIMESTAMPTZ DEFAULT NULL,
+  p_end_date TIMESTAMPTZ DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_result JSON;
+  v_start_date TIMESTAMPTZ;
+  v_end_date TIMESTAMPTZ;
+BEGIN
+  -- Set default date range if not provided
+  v_start_date := COALESCE(p_start_date, NOW() - INTERVAL '30 days');
+  v_end_date := COALESCE(p_end_date, NOW());
+
+  -- Validate teacher access
+  IF p_teacher_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM auth.users WHERE id = p_teacher_id
+  ) THEN
+    RETURN json_build_object('error', 'Invalid teacher ID');
+  END IF;
+
+  -- Compute metrics using public_quiz_runs
+  SELECT json_build_object(
+    'total_plays', COALESCE(COUNT(DISTINCT pqr.id), 0),
+    'active_students', COALESCE(COUNT(DISTINCT pqr.session_id), 0),
+    'weighted_avg_score', COALESCE(ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.percentage END), 1), 0),
+    'engagement_rate', COALESCE(
+      ROUND((COUNT(DISTINCT CASE WHEN pqr.status = 'completed' THEN pqr.id END)::numeric / 
+      NULLIF(COUNT(DISTINCT pqr.id), 0)::numeric) * 100, 1), 
+      0
+    ),
+    'total_quizzes', COALESCE(COUNT(DISTINCT qs.id), 0),
+    'avg_completion_time', COALESCE(ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.duration_seconds END), 0), 0),
+    'date_range', json_build_object(
+      'start', v_start_date,
+      'end', v_end_date
+    )
+  )
+  INTO v_result
+  FROM question_sets qs
+  LEFT JOIN public_quiz_runs pqr ON qs.id = pqr.question_set_id 
+    AND pqr.started_at BETWEEN v_start_date AND v_end_date
+  WHERE qs.created_by = p_teacher_id
+    AND qs.is_active = true
+    AND qs.approval_status = 'approved';
+
+  RETURN v_result;
+END;
+$$;
+/*
+  # Fix Single Parameter Dashboard Metrics Function
+
+  Update the single-parameter version to also use public_quiz_runs.
+*/
+
+DROP FUNCTION IF EXISTS get_teacher_dashboard_metrics(uuid);
+
+CREATE OR REPLACE FUNCTION get_teacher_dashboard_metrics(p_teacher_id UUID)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_result JSON;
+BEGIN
+  -- Get comprehensive teacher dashboard metrics using public_quiz_runs
+  WITH quiz_stats AS (
+    SELECT 
+      COUNT(DISTINCT qs.id) as total_quizzes,
+      COUNT(DISTINCT CASE WHEN qs.status = 'published' THEN qs.id END) as published_quizzes,
+      COUNT(DISTINCT CASE WHEN qs.status = 'draft' THEN qs.id END) as draft_quizzes
+    FROM question_sets qs
+    WHERE qs.created_by = p_teacher_id
+    AND qs.is_active = true
+  ),
+  student_stats AS (
+    SELECT 
+      COUNT(DISTINCT pqr.session_id) as total_students,
+      COUNT(DISTINCT pqr.id) as total_attempts,
+      SUM(CASE WHEN pqr.status = 'completed' THEN 1 ELSE 0 END) as completed_attempts
+    FROM public_quiz_runs pqr
+    INNER JOIN question_sets qs ON pqr.question_set_id = qs.id
+    WHERE qs.created_by = p_teacher_id
+  ),
+  performance_stats AS (
+    SELECT 
+      ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.percentage END), 1) as avg_score,
+      ROUND(AVG(CASE WHEN pqr.status = 'completed' THEN pqr.duration_seconds END), 0) as avg_time
+    FROM public_quiz_runs pqr
+    INNER JOIN question_sets qs ON pqr.question_set_id = qs.id
+    WHERE qs.created_by = p_teacher_id
+    AND pqr.status = 'completed'

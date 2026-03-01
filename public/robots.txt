@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /teacherdashboard/
+Disallow: /teacher/
+Disallow: /reset-password/
+
+Sitemap: https://startsprint.com/sitemap.xml
