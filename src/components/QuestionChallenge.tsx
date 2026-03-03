@@ -9,13 +9,13 @@ interface Question {
   id: string;
   question_text: string;
   options: string[];
-  image_url?: string;
+  image_url?: string | null;
 }
 
 interface QuestionChallengeProps {
   runId: string;
-  questionSetId: string;
-  analyticsSessionId: string | null;
+  questionSetId?: string;
+  analyticsSessionId?: string | null;
   questions: Question[];
   onComplete: (summary: any) => void;
   onGameOver: (summary: any) => void;
@@ -183,7 +183,7 @@ export function QuestionChallenge({ runId, questionSetId, analyticsSessionId, qu
               try {
                 if (analyticsSessionId) {
                   await completeQuizPlaySession(analyticsSessionId, {
-                    score: summary.summary.score || 0,
+                    score: summary.summary.score_total || 0,
                     correct_count: correctCount.current,
                     wrong_count: wrongCount.current,
                   });
@@ -220,7 +220,7 @@ export function QuestionChallenge({ runId, questionSetId, analyticsSessionId, qu
           try {
             if (analyticsSessionId) {
               await completeQuizPlaySession(analyticsSessionId, {
-                score: summary.summary.score || 0,
+                score: summary.summary.score_total || 0,
                 correct_count: correctCount.current,
                 wrong_count: wrongCount.current,
               });
@@ -245,7 +245,7 @@ export function QuestionChallenge({ runId, questionSetId, analyticsSessionId, qu
             try {
               if (analyticsSessionId) {
                 await completeQuizPlaySession(analyticsSessionId, {
-                  score: summary.summary.score || 0,
+                  score: summary.summary.score_total || 0,
                   correct_count: correctCount.current,
                   wrong_count: wrongCount.current,
                 });

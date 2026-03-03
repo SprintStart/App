@@ -5,6 +5,7 @@ import { startTopicRun } from '../lib/api';
 import { QuestionChallenge } from '../components/QuestionChallenge';
 import { EndScreen } from '../components/EndScreen';
 import { ImmersiveProvider } from '../contexts/ImmersiveContext';
+import { OptimizedImage } from '../components/OptimizedImage';
 import { Play, ArrowLeft, BookOpen, Clock, AlertCircle } from 'lucide-react';
 
 interface SchoolData {
@@ -195,7 +196,13 @@ function SchoolWallContent() {
           <div className="flex items-center justify-between">
             <div>
               <div className="flex items-center gap-3">
-                <img src="/startsprint_logo.png" alt="StartSprint" className="h-10 w-auto" />
+                <OptimizedImage
+                  src="/startsprint_logo.png"
+                  alt="StartSprint"
+                  className="h-10 w-auto"
+                  width={120}
+                  height={40}
+                />
               </div>
               <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mt-3">{school?.school_name}</h1>
               <p className="text-gray-600 mt-1">Select a topic and start a quiz -- no sign-up required</p>

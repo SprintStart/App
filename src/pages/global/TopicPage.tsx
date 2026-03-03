@@ -64,8 +64,8 @@ export function TopicPage() {
 
           // Get country_code and exam_code from examSlug
           const examData = findExamBySlug(examSlug);
-          const countryCode = examData?.country.code;
-          const examCode = examData?.exam.code;
+          const countryCode = examData?.country.slug;
+          const examCode = examData?.exam.slug;
 
           // Filter quizzes by topic AND destination (country/exam)
           const { data: quizzesData } = await supabase

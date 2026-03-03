@@ -5,6 +5,7 @@ import { SEOHead } from '../../components/SEOHead';
 import { findSubjectById, SUBJECTS } from '../../lib/globalData';
 import { supabase } from '../../lib/supabase';
 import { Target, Search, Filter } from 'lucide-react';
+import { getCached, setCache } from '../../lib/cacheManager';
 
 interface GlobalQuiz {
   id: string;
@@ -17,11 +18,19 @@ interface GlobalQuiz {
   topic: {
     name: string;
     subject: string;
+    global_category: string | null;
   };
   profiles: {
     full_name: string;
   } | null;
 }
+
+const GLOBAL_CATEGORIES = [
+  { id: 'aptitude', name: 'Aptitude & Psychometric Tests', icon: '🧠' },
+  { id: 'career_prep', name: 'Career & Employment Prep', icon: '💼' },
+  { id: 'general_knowledge', name: 'General Knowledge & Trivia', icon: '🌍' },
+  { id: 'life_skills', name: 'Life Skills', icon: '🎯' },
+];
 
 export function GlobalQuizzesPage() {
   const [allQuizzes, setAllQuizzes] = useState<GlobalQuiz[]>([]);
@@ -29,12 +38,24 @@ export function GlobalQuizzesPage() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedSubject, setSelectedSubject] = useState<string>('all');
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'recent' | 'popular'>('recent');
 
   useEffect(() => {
     async function loadAllQuizzes() {
       try {
         console.log('[GlobalQuizzesPage] Loading global quizzes...');
+
+        // Check cache first
+        const cacheKey = 'global_quizzes_list';
+        const cached = getCached<GlobalQuiz[]>(cacheKey);
+        if (cached) {
+          console.log('[GlobalQuizzesPage] Using cached data');
+          setAllQuizzes(cached);
+          setFilteredQuizzes(cached);
+          setLoading(false);
+          return;
+        }
 
         // Fetch truly GLOBAL quizzes only (no exam_system_id, no school_id)
         // These are non-curriculum quizzes: aptitude tests, career prep, life skills, general knowledge
@@ -103,6 +124,10 @@ export function GlobalQuizzesPage() {
           );
 
           const validQuizzes = quizzesWithCounts.filter(q => q.question_count > 0);
+
+          // Cache the results
+          setCache(cacheKey, validQuizzes);
+
           setAllQuizzes(validQuizzes);
           setFilteredQuizzes(validQuizzes);
         }
@@ -133,13 +158,18 @@ export function GlobalQuizzesPage() {
       filtered = filtered.filter(quiz => quiz.topic.subject === selectedSubject);
     }
 
+    // Apply category filter
+    if (selectedCategory !== 'all') {
+      filtered = filtered.filter(quiz => quiz.topic.global_category === selectedCategory);
+    }
+
     // Apply sorting
     if (sortBy === 'recent') {
       filtered.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     }
 
     setFilteredQuizzes(filtered);
-  }, [searchTerm, selectedSubject, sortBy, allQuizzes]);
+  }, [searchTerm, selectedSubject, selectedCategory, sortBy, allQuizzes]);
 
   const breadcrumbs = [
     { label: 'Explore', href: '/explore' },
@@ -170,7 +200,7 @@ export function GlobalQuizzesPage() {
             Global Quiz Library
           </h1>
           <p className="text-lg text-gray-600 max-w-3xl mx-auto">
-            Non-curriculum-based tests designed to build skills, reasoning ability, career readiness, and general knowledge
+            Global quizzes are non-curriculum-based tests designed to build skills, reasoning ability, career readiness, and general knowledge.
           </p>
           <p className="text-sm text-gray-500 mt-2">
             {allQuizzes.length} {allQuizzes.length === 1 ? 'quiz' : 'quizzes'} available
@@ -195,6 +225,21 @@ export function GlobalQuizzesPage() {
           <div className="flex flex-wrap gap-4">
             <div className="flex items-center gap-2">
               <Filter className="w-5 h-5 text-gray-500" />
+              <select
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="all">All Categories</option>
+                {GLOBAL_CATEGORIES.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.icon} {category.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2">
               <select
                 value={selectedSubject}
                 onChange={(e) => setSelectedSubject(e.target.value)}
@@ -246,6 +291,7 @@ export function GlobalQuizzesPage() {
               onClick={() => {
                 setSearchTerm('');
                 setSelectedSubject('all');
+                setSelectedCategory('all');
               }}
               className="text-blue-600 hover:text-blue-700 font-medium"
             >
@@ -266,6 +312,11 @@ export function GlobalQuizzesPage() {
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-2">
                       {Icon && <Icon className={`w-6 h-6 ${subjectData.color} flex-shrink-0`} />}
+                      {quiz.topic.global_category && (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 border border-blue-200">
+                          {GLOBAL_CATEGORIES.find(c => c.id === quiz.topic.global_category)?.icon}
+                        </span>
+                      )}
                       {quiz.difficulty && (
                         <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${getDifficultyColor(quiz.difficulty)}`}>
                           {quiz.difficulty}

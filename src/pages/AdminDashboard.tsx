@@ -6,13 +6,16 @@ import { AdminAnalyticsPage } from '../components/admin/AdminAnalyticsPage';
 import { AdminFeedbackPage } from '../components/admin/AdminFeedbackPage';
 import { AdminTeachersPage } from '../components/admin/AdminTeachersPage';
 import { SystemHealthPage } from '../components/admin/SystemHealthPage';
-import { SponsorBannersPage } from '../components/admin/SponsorBannersPage';
+import { SponsorBannersPageV2 } from '../components/admin/SponsorBannersPageV2';
 import { SubscriptionsPage } from '../components/admin/SubscriptionsPage';
 import { ContentManagement } from '../components/admin/ContentManagement';
 import { DataIntegrityPage } from '../components/admin/DataIntegrityPage';
 import AdminSchoolsPage from '../components/admin/AdminSchoolsPage';
 import AdminSubjectsTopicsPage from '../components/admin/AdminSubjectsTopicsPage';
 import SupportInboxPage from '../components/admin/SupportInboxPage';
+import { LowBandwidthSettings } from '../components/admin/LowBandwidthSettings';
+import TokenSettingsPanel from '../components/admin/TokenSettingsPanel';
+import { FEATURE_TOKENS } from '../lib/featureFlags';
 
 export function AdminDashboard() {
   const location = useLocation();
@@ -37,7 +40,7 @@ export function AdminDashboard() {
         {currentView === 'quizzes' && <ContentManagement />}
         {currentView === 'subjects' && <AdminSubjectsTopicsPage />}
         {currentView === 'subscriptions' && <SubscriptionsPage />}
-        {currentView === 'sponsors' && <SponsorBannersPage />}
+        {currentView === 'sponsors' && <SponsorBannersPageV2 />}
         {currentView === 'schools' && <AdminSchoolsPage />}
         {currentView === 'support' && <SupportInboxPage />}
         {currentView === 'reports' && (
@@ -126,11 +129,15 @@ export function AdminDashboard() {
           </div>
         )}
         {currentView === 'settings' && (
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8">
-            <h3 className="text-2xl font-bold text-gray-900 mb-4">Settings</h3>
-            <p className="text-gray-600 mb-6">Platform configuration and preferences</p>
-            <div className="text-center py-12 text-gray-500">
-              Settings interface - Coming soon
+          <div className="space-y-6">
+            <LowBandwidthSettings />
+            {FEATURE_TOKENS && <TokenSettingsPanel />}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8">
+              <h3 className="text-2xl font-bold text-gray-900 mb-4">Other Settings</h3>
+              <p className="text-gray-600 mb-6">Additional platform configuration and preferences</p>
+              <div className="text-center py-12 text-gray-500">
+                Additional settings - Coming soon
+              </div>
             </div>
           </div>
         )}

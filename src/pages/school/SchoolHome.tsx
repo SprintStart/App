@@ -72,13 +72,15 @@ export function SchoolHome() {
           }
 
           // Load published quizzes for this school
+          // First, get question_sets with their question counts in a single query
           const { data: quizData } = await supabase
             .from('question_sets')
             .select(`
               id,
               title,
               difficulty,
-              topic_id
+              topic_id,
+              topics!inner(subject)
             `)
             .eq('school_id', schoolData.id)
             .eq('approval_status', 'approved')
@@ -86,7 +88,7 @@ export function SchoolHome() {
             .limit(12);
 
           if (quizData && quizData.length > 0) {
-            // Get question counts and topic info
+            // Get question counts for all quizzes in parallel
             const quizzesWithDetails = await Promise.all(
               quizData.map(async (quiz: any) => {
                 const { count } = await supabase
@@ -94,23 +96,21 @@ export function SchoolHome() {
                   .select('*', { count: 'exact', head: true })
                   .eq('question_set_id', quiz.id);
 
-                const { data: topicData } = await supabase
-                  .from('topics')
-                  .select('subject')
-                  .eq('id', quiz.topic_id)
-                  .maybeSingle();
-
                 return {
                   id: quiz.id,
                   title: quiz.title,
                   difficulty: quiz.difficulty || 'medium',
                   question_count: count || 0,
-                  subject: topicData?.subject || 'other',
+                  subject: quiz.topics?.subject || 'other',
                 };
               })
             );
 
-            setQuizzes(quizzesWithDetails.filter(q => q.question_count > 0));
+            // Filter out quizzes with no questions - THIS is what determines the final list
+            const validQuizzes = quizzesWithDetails.filter(q => q.question_count > 0);
+            setQuizzes(validQuizzes);
+          } else {
+            setQuizzes([]);
           }
         }
       } catch (error) {

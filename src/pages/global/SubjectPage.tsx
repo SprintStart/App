@@ -4,6 +4,7 @@ import { GlobalHeader } from '../../components/global/GlobalHeader';
 import { SEOHead } from '../../components/SEOHead';
 import { findExamBySlug, findSubjectById } from '../../lib/globalData';
 import { supabase } from '../../lib/supabase';
+import { getCached, setCache } from '../../lib/cacheManager';
 
 interface Topic {
   id: string;
@@ -38,11 +39,21 @@ export function SubjectPage() {
       try {
         // Get country_code and exam_code from examSlug
         const examData = findExamBySlug(examSlug);
-        const countryCode = examData?.country.code;
-        const examCode = examData?.exam.code;
+        const countryCode = examData?.country.slug;
+        const examCode = examData?.exam.slug;
 
         if (!countryCode || !examCode) {
           console.error('Invalid exam slug:', examSlug);
+          setLoading(false);
+          return;
+        }
+
+        // Check cache first
+        const cacheKey = `exam_subject_topics_${examSlug}_${subjectSlug}`;
+        const cached = getCached<Topic[]>(cacheKey);
+        if (cached) {
+          console.log('[SubjectPage] Using cached data');
+          setTopics(cached);
           setLoading(false);
           return;
         }
@@ -84,7 +95,12 @@ export function SubjectPage() {
           );
 
           // Only show topics with at least 1 quiz for this exam
-          setTopics(topicsWithCounts.filter((t) => t.quiz_count > 0));
+          const filteredTopics = topicsWithCounts.filter((t) => t.quiz_count > 0);
+
+          // Cache the results
+          setCache(cacheKey, filteredTopics);
+
+          setTopics(filteredTopics);
         }
       } catch (error) {
         console.error('Error loading topics:', error);

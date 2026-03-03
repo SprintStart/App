@@ -11,6 +11,8 @@ interface AlertPayload {
   target: string;
   error_message: string;
   failure_count: number;
+  severity?: 'critical' | 'warning';
+  http_status?: number;
 }
 
 Deno.serve(async (req: Request) => {
@@ -22,10 +24,36 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { check_name, target, error_message, failure_count }: AlertPayload = await req.json();
+    const { check_name, target, error_message, failure_count, severity = 'critical', http_status }: AlertPayload = await req.json();
 
     const timestamp = new Date().toISOString();
-    const alertSubject = `CRITICAL: ${check_name} Failed ${failure_count} Times`;
+    const severityLabel = severity === 'critical' ? 'CRITICAL' : 'WARNING';
+    const alertSubject = `${severityLabel}: ${check_name} - ${failure_count} Consecutive Failures`;
+
+    // Enhanced error message with root cause analysis
+    let enhancedErrorMessage = error_message;
+
+    if (http_status) {
+      if (http_status >= 500) {
+        enhancedErrorMessage = `Server Error (${http_status}): The application server is experiencing issues. Check server logs and deployment status.`;
+      } else if (http_status === 404) {
+        enhancedErrorMessage = `Route Not Found (404): The URL "${target}" does not exist. Verify routing configuration.`;
+      } else if (http_status === 403) {
+        enhancedErrorMessage = `Access Forbidden (403): Permission denied accessing "${target}". Check authentication/authorization.`;
+      } else if (http_status === 401) {
+        enhancedErrorMessage = `Unauthorized (401): Authentication required for "${target}". Check API keys or auth tokens.`;
+      } else if (http_status >= 400) {
+        enhancedErrorMessage = `Client Error (${http_status}): ${error_message}`;
+      }
+    } else if (error_message?.includes('certificate')) {
+      enhancedErrorMessage = `SSL Certificate Error: "${error_message}". Verify domain configuration and SSL certificates.`;
+    } else if (error_message?.includes('DNS')) {
+      enhancedErrorMessage = `DNS Resolution Failed: "${error_message}". Check domain DNS records and nameservers.`;
+    } else if (error_message?.includes('timeout')) {
+      enhancedErrorMessage = `Request Timeout: "${error_message}". Server may be overloaded or unresponsive.`;
+    } else if (error_message?.includes('ECONNREFUSED')) {
+      enhancedErrorMessage = `Connection Refused: Server is not accepting connections. Check if service is running.`;
+    }
 
     const alertHtml = `
 <!DOCTYPE html>
@@ -65,8 +93,15 @@ Deno.serve(async (req: Request) => {
 
     <div class="detail">
       <div class="label">Error Message:</div>
-      <div class="value">${error_message || 'No error message provided'}</div>
+      <div class="value">${enhancedErrorMessage || 'No error message provided'}</div>
     </div>
+
+    ${http_status ? `
+    <div class="detail">
+      <div class="label">HTTP Status:</div>
+      <div class="value">${http_status}</div>
+    </div>
+    ` : ''}
 
     <div class="detail">
       <div class="label">Timestamp:</div>
@@ -90,18 +125,25 @@ Deno.serve(async (req: Request) => {
     `.trim();
 
     const alertText = `
-CRITICAL HEALTH CHECK FAILURE
+${severityLabel} HEALTH CHECK FAILURE
 
 Check: ${check_name}
 Target: ${target}
 Consecutive Failures: ${failure_count}
-Error: ${error_message || 'No error message provided'}
+${http_status ? `HTTP Status: ${http_status}` : ''}
+Error: ${enhancedErrorMessage || 'No error message provided'}
 Timestamp: ${timestamp}
 
 This check has failed ${failure_count} times consecutively.
-Please investigate immediately.
+${severity === 'critical' ? 'IMMEDIATE INVESTIGATION REQUIRED.' : 'Performance degradation detected.'}
 
 View details: https://startsprint.app/admin/system-health
+
+Next steps:
+1. Check application logs in Supabase dashboard
+2. Verify DNS and SSL certificate configuration
+3. Test the endpoint manually: ${target}
+4. Check recent deployments for breaking changes
     `.trim();
 
     console.error('HEALTH ALERT:', alertText);

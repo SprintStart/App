@@ -1,0 +1,97 @@
+
+🔍 Fetching GLOBAL quizzes with exam keywords...
+
+═══════════════════════════════════════════════════════════════
+GLOBAL QUIZZES WITH EXAM KEYWORDS - MAPPING REVIEW
+═══════════════════════════════════════════════════════════════
+
+
+📍 GB/A_LEVEL (8 quizzes)
+──────────────────────────────────────────────────────────────────────
+
+  ID: 47ed7d9f-9759-4a87-ac4e-02c6dc27dce8
+  Title: A-level BUSINESS Paper 1 Business 1 Past Questions
+  Subject/Topic: business > A-level BUSINESS Paper 1 Business 1
+  Current: country_code=NULL, exam_code=NULL
+  Suggested: country_code=GB, exam_code=A_LEVEL
+  Status: approved
+
+  ID: f5486277-5792-4685-89e3-360ddc9ead24
+  Title: A-level BUSINESS Paper 1 Business 1- Tuesday 14 May 2024
+  Subject/Topic: business > AQA A-level BUSINESS Paper 1 Business 1- Tuesday 14 May 2024
+  Current: country_code=NULL, exam_code=NULL
+  Suggested: country_code=GB, exam_code=A_LEVEL
+  Status: approved
+
+  ID: 47b897e5-5054-4492-96b4-d7b87f1ae0bd
+  Title: AQA  AS Business Paper 1
+  Subject/Topic: business > AQA AS BUSINESS Paper 1 Business 1 2018
+  Current: country_code=NULL, exam_code=NULL
+  Suggested: country_code=GB, exam_code=A_LEVEL
+  Exam Board: AQA
+  Status: approved
+
+  ID: 09885113-e14a-4f56-abc0-ec7115b13f5b
+  Title: AQA A Level Business Studies Objectives Past Questions 1
+  Subject/Topic: business > AQA A Level Business Studies Objectives Past Questions
+  Current: country_code=NULL, exam_code=NULL
+  Suggested: country_code=GB, exam_code=A_LEVEL
+  Exam Board: AQA
+  Status: approved
+
+  ID: 87f1c5ba-359a-403b-9644-d9f55d08ce03
+  Title: AQA A Level Business Studies Objectives Past Questions 2
+  Subject/Topic: business > AQA A Level Business Studies Objectives Past Questions
+  Current: country_code=UK, exam_code=A_LEVEL
+  Suggested: country_code=GB, exam_code=A_LEVEL
+  Exam Board: AQA
+  Status: approved
+
+  ID: e877d12b-4318-423a-bd0b-35c5d2617b86
+  Title: Managers, Leadership and Decision-Making (AQA A-Level Business)
+  Subject/Topic: business > Managers, Leadership and Decision-Making
+  Current: country_code=NULL, exam_code=NULL
+  Suggested: country_code=GB, exam_code=A_LEVEL
+  Exam Board: AQA
+  Status: approved
+
+  ID: ad9d37df-091d-43e9-9474-48dd7067f134
+  Title: Market Share & Business Growth (AQA A-Level Business – Paper 1)
+  Subject/Topic: business > Market Share & Business Growth
+  Current: country_code=NULL, exam_code=NULL
+  Suggested: country_code=GB, exam_code=A_LEVEL
+  Exam Board: AQA
+  Status: approved
+
+  ID: 3312edb0-57de-46b6-8215-3770e3bb3e3c
+  Title: What is Business? (Purpose, Objectives & Ownership) – AQA A-Level Business
+  Subject/Topic: business > What is business? (Purpose, objectives, ownership)
+  Current: country_code=NULL, exam_code=NULL
+  Suggested: country_code=GB, exam_code=A_LEVEL
+  Exam Board: AQA
+  Status: approved
+
+📍 US/SAT (1 quizzes)
+──────────────────────────────────────────────────────────────────────
+
+  ID: f47183d1-8a7a-4524-9c07-12e048302762
+  Title: Human Resource Management (Motivation & Organisational Structure)
+  Subject/Topic: business > Human Resource Management (Motivation & Organisational Structure)
+  Current: country_code=NULL, exam_code=NULL
+  Suggested: country_code=US, exam_code=SAT
+  Status: approved
+
+
+═══════════════════════════════════════════════════════════════
+TOTAL GLOBAL QUIZZES WITH EXAM KEYWORDS: 9
+═══════════════════════════════════════════════════════════════
+
+
+📊 SUMMARY BY MAPPING:
+
+  GB/A_LEVEL           → 8 quizzes
+  US/SAT               → 1 quizzes
+
+
+✅ Review complete. Approve mappings before running updates.
+

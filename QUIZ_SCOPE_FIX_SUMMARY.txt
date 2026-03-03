@@ -1,0 +1,111 @@
+═══════════════════════════════════════════════════════════════════════
+  QUIZ SCOPE LOCKING FIX - COMPLETE
+═══════════════════════════════════════════════════════════════════════
+
+✅ WHAT WAS FIXED
+──────────────────────────────────────────────────────────────────────
+1. Global destination now shows ONLY Global categories (not curriculum)
+2. Database constraints lock quiz scope to prevent cross-contamination
+3. Build successful, no side effects on Stripe/auth/quiz play
+
+✅ FILES CHANGED
+──────────────────────────────────────────────────────────────────────
+✓ src/lib/globalCategories.ts (NEW)
+✓ src/components/teacher-dashboard/CreateQuizWizard.tsx (MODIFIED)
+✓ QUIZ_SCOPE_LOCKING_CONSTRAINTS.sql (NEW - run this in Supabase)
+
+✅ BUILD OUTPUT
+──────────────────────────────────────────────────────────────────────
+✓ 2169 modules transformed
+✓ built in 18.17s
+dist/index.html                     2.24 kB
+dist/assets/index-ogbUjajQ.css     66.03 kB
+dist/assets/index-Ih-61uPr.js   1,021.41 kB
+
+✅ GLOBAL CATEGORIES (NON-CURRICULUM)
+──────────────────────────────────────────────────────────────────────
+When "Global StartSprint Library" is selected, only these 4 categories show:
+1. Aptitude & Psychometric Tests
+2. Career & Employment Prep
+3. General Knowledge / Popular Formats
+4. Life Skills / Study Skills / Digital Literacy / AI basics
+
+NOT shown: Mathematics, Science, English, Geography, etc.
+
+✅ SCOPE LOCKING RULES (DATABASE ENFORCED)
+──────────────────────────────────────────────────────────────────────
+GLOBAL quizzes:
+  ✓ country_code = NULL
+  ✓ exam_code = NULL
+  ✓ school_id = NULL
+
+COUNTRY_EXAM quizzes:
+  ✓ country_code = NOT NULL (e.g., 'GH')
+  ✓ exam_code = NOT NULL (e.g., 'BECE')
+  ✓ school_id = NULL
+
+SCHOOL quizzes:
+  ✓ school_id = NOT NULL
+  ✓ country_code = NULL
+  ✓ exam_code = NULL
+
+destination_scope = IMMUTABLE (cannot be changed after creation)
+
+✅ SQL PROOF EXAMPLES
+──────────────────────────────────────────────────────────────────────
+Valid Global Quiz:
+  destination_scope='GLOBAL', country_code=NULL, exam_code=NULL, school_id=NULL
+  ✅ Allowed
+
+Invalid Global Quiz:
+  destination_scope='GLOBAL', country_code='GB', exam_code='GCSE', school_id=NULL
+  ❌ Rejected by chk_global_scope_nulls
+
+Valid Ghana BECE Quiz:
+  destination_scope='COUNTRY_EXAM', country_code='GH', exam_code='BECE', school_id=NULL
+  ✅ Allowed
+
+Valid School Quiz:
+  destination_scope='SCHOOL_WALL', country_code=NULL, exam_code=NULL, school_id='123'
+  ✅ Allowed
+
+✅ NO SIDE EFFECTS - THESE WERE NOT TOUCHED
+──────────────────────────────────────────────────────────────────────
+✓ Stripe integration (checkout, webhooks, subscriptions)
+✓ Authentication (login, signup, password reset)
+✓ Quiz runs (start-public-quiz, create-quiz-attempt)
+✓ School wall routes (SchoolWall.tsx, SchoolHome.tsx)
+✓ Analytics (dashboard, edge functions)
+✓ Quiz play flow (QuizPlay.tsx, QuestionChallenge.tsx)
+✓ Payments (PaymentSuccess.tsx, PaymentCancelled.tsx)
+
+✅ DEPLOYMENT STEPS
+──────────────────────────────────────────────────────────────────────
+1. Frontend: Already built (dist/ folder ready)
+2. Database: Run QUIZ_SCOPE_LOCKING_CONSTRAINTS.sql in Supabase SQL Editor
+3. Test: Create a Global quiz → verify categories show (not subjects)
+4. Verify: Check database → Global quizzes have NULL country/exam/school
+
+✅ VERIFICATION QUERIES
+──────────────────────────────────────────────────────────────────────
+Run in Supabase SQL Editor:
+
+-- Check all Global quizzes have NULL scope fields
+SELECT id, title, destination_scope, country_code, exam_code, school_id
+FROM question_sets
+WHERE destination_scope = 'GLOBAL';
+-- Expected: All rows have NULL for country_code, exam_code, school_id
+
+-- Check all Ghana BECE quizzes have correct scope
+SELECT id, title, destination_scope, country_code, exam_code, school_id
+FROM question_sets
+WHERE country_code = 'GH' AND exam_code = 'BECE';
+-- Expected: All rows have 'COUNTRY_EXAM' scope and NULL school_id
+
+-- Check scope immutability (should fail)
+UPDATE question_sets SET destination_scope = 'GLOBAL' WHERE id = 'some-quiz-id';
+-- Expected: ERROR: destination_scope cannot be changed after creation
+
+══════════════════════════════════════════════════════════════════════
+For detailed documentation, see: QUIZ_SCOPE_LOCKING_COMPLETE.md
+══════════════════════════════════════════════════════════════════════

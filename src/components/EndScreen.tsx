@@ -1,7 +1,9 @@
 import { useImmersive } from '../contexts/ImmersiveContext';
-import { Trophy, XCircle, RotateCcw, Home, Target, Clock, Award, CheckCircle, XCircle as XCircleSmall, Share2, Compass, GraduationCap } from 'lucide-react';
+import { Trophy, Circle as XCircle, RotateCcw, Hop as Home, Target, Clock, Award, CircleCheck as CheckCircle, Circle as XCircleSmall, Share2, Compass, GraduationCap } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { QuizFeedbackOverlay } from './QuizFeedbackOverlay';
+import TokenRewardModal from './TokenRewardModal';
+import { FEATURE_TOKENS } from '../lib/featureFlags';
 
 interface QuestionBreakdown {
   question_text: string;
@@ -37,6 +39,7 @@ export function EndScreen({ type, summary, quizId, analyticsSessionId, schoolId,
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [shareSuccess, setShareSuccess] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [showTokenModal, setShowTokenModal] = useState(false);
 
   useEffect(() => {
     const handlePopState = (e: PopStateEvent) => {
@@ -53,13 +56,22 @@ export function EndScreen({ type, summary, quizId, analyticsSessionId, schoolId,
   }, []);
 
   useEffect(() => {
-    // Show feedback overlay after 2 seconds
     if (quizId) {
       const timer = setTimeout(() => {
         setShowFeedback(true);
       }, 2000);
 
       return () => clearTimeout(timer);
+    }
+  }, [quizId]);
+
+  useEffect(() => {
+    if (FEATURE_TOKENS && quizId) {
+      const tokenTimer = setTimeout(() => {
+        setShowTokenModal(true);
+      }, 3500);
+
+      return () => clearTimeout(tokenTimer);
     }
   }, [quizId]);
 
@@ -326,6 +338,15 @@ export function EndScreen({ type, summary, quizId, analyticsSessionId, schoolId,
           sessionId={analyticsSessionId}
           schoolId={schoolId}
           onClose={() => setShowFeedback(false)}
+        />
+      )}
+
+      {FEATURE_TOKENS && showTokenModal && (
+        <TokenRewardModal
+          isOpen={showTokenModal}
+          onClose={() => setShowTokenModal(false)}
+          quizId={quizId}
+          runId={summary.run_id}
         />
       )}
     </div>

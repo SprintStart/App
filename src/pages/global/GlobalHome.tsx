@@ -5,6 +5,10 @@ import { SEOHead } from '../../components/SEOHead';
 import { COUNTRIES, findSubjectById } from '../../lib/globalData';
 import { supabase } from '../../lib/supabase';
 import { BadgeCheck, BookOpen, Target } from 'lucide-react';
+import { AdBanner } from '../../components/ads/AdBanner';
+import { TrendingQuizGrid } from '../../components/global/TrendingQuizGrid';
+import { PopularQuizGrid } from '../../components/global/PopularQuizGrid';
+import { FEATURE_TRENDING_POPULAR } from '../../lib/featureFlags';
 
 interface GlobalQuiz {
   id: string;
@@ -17,6 +21,7 @@ interface GlobalQuiz {
   topic: {
     name: string;
     subject: string;
+    global_category: string | null;
   };
   profiles: {
     full_name: string;
@@ -61,7 +66,7 @@ export function GlobalHome() {
               // Get topic info
               const { data: topicData } = await supabase
                 .from('topics')
-                .select('name, subject')
+                .select('name, subject, global_category')
                 .eq('id', quiz.topic_id)
                 .maybeSingle();
 
@@ -79,7 +84,7 @@ export function GlobalHome() {
                 difficulty: quiz.difficulty,
                 timer_seconds: quiz.timer_seconds,
                 question_count: count || 0,
-                topic: topicData || { name: 'Unknown', subject: 'other' },
+                topic: topicData || { name: 'Unknown', subject: 'other', global_category: null },
                 profiles: null,
               };
             })
@@ -122,12 +127,37 @@ export function GlobalHome() {
           </p>
         </div>
 
+        {/* Ad Banner - GLOBAL_HOME placement */}
+        <AdBanner placement="GLOBAL_HOME" className="mb-8" />
+
+        {/* Trending Quizzes Section */}
+        {FEATURE_TRENDING_POPULAR && (
+          <div className="mb-16">
+            <div className="mb-6">
+              <h2 className="text-3xl font-bold text-white mb-2">Trending This Week</h2>
+              <p className="text-gray-400">Most improved quizzes over the past 7 days</p>
+            </div>
+            <TrendingQuizGrid limit={6} />
+          </div>
+        )}
+
+        {/* Popular Quizzes Section */}
+        {FEATURE_TRENDING_POPULAR && (
+          <div className="mb-16">
+            <div className="mb-6">
+              <h2 className="text-3xl font-bold text-white mb-2">Popular Quizzes (30 Days)</h2>
+              <p className="text-gray-400">Most played quizzes in the past month</p>
+            </div>
+            <PopularQuizGrid limit={6} />
+          </div>
+        )}
+
         {/* Global Quiz Library Section */}
         <div className="mb-16">
           <div className="flex items-center justify-between mb-6">
             <div>
               <h2 className="text-3xl font-bold text-white mb-2">Global Quiz Library</h2>
-              <p className="text-gray-400">Non-curriculum-based tests designed to build skills, reasoning ability, career readiness, and general knowledge</p>
+              <p className="text-gray-400">Global quizzes are non-curriculum-based tests designed to build skills, reasoning ability, career readiness, and general knowledge.</p>
             </div>
             <Link to="/explore/global" className="flex items-center gap-2 text-blue-400 hover:text-blue-300 transition-colors">
               <span className="text-sm font-medium">View all</span>

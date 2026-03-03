@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { supabase, Profile } from './lib/supabase';
 import { ImmersiveProvider } from './contexts/ImmersiveContext';
+import { LowBandwidthProvider } from './contexts/LowBandwidthContext';
+import { LowBandwidthIndicator } from './components/LowBandwidthIndicator';
 import { TeacherApp } from './components/TeacherApp';
 import { MissionPage } from './components/MissionPage';
 import { PricingPage } from './components/PricingPage';
@@ -133,8 +135,10 @@ function App() {
   }
 
   return (
-    <ImmersiveProvider>
-      <Routes>
+    <LowBandwidthProvider>
+      <ImmersiveProvider>
+        <LowBandwidthIndicator />
+        <Routes>
         {/* Immersive Hero Homepage */}
         <Route path="/" element={<PublicHomepage />} />
 
@@ -218,8 +222,9 @@ function App() {
         <Route path="/:schoolSlug/:subjectSlug/:topicSlug" element={<SchoolTopicPage />} />
         <Route path="/:schoolSlug/:subjectSlug" element={<SchoolSubjectPage />} />
         <Route path="/:schoolSlug" element={<SchoolHome />} />
-      </Routes>
-    </ImmersiveProvider>
+        </Routes>
+      </ImmersiveProvider>
+    </LowBandwidthProvider>
   );
 }
 

@@ -4,6 +4,7 @@ import { GlobalHeader } from '../../components/global/GlobalHeader';
 import { SEOHead } from '../../components/SEOHead';
 import { findExamBySlug, SUBJECTS, SubjectDef } from '../../lib/globalData';
 import { supabase } from '../../lib/supabase';
+import { AdBanner } from '../../components/ads/AdBanner';
 
 interface SponsorAd {
   id: string;
@@ -96,30 +97,13 @@ export function ExamPage() {
           <p className="text-lg text-gray-600 max-w-2xl mx-auto">{exam.description}</p>
         </div>
 
-        {/* Sponsor Banner */}
-        {sponsor && (
-          <div className="mb-12">
-            <div className="text-xs text-gray-500 text-center mb-2">Sponsored</div>
-            <a
-              href={sponsor.click_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block max-w-4xl mx-auto rounded-xl overflow-hidden shadow-lg hover:shadow-xl transition-shadow"
-            >
-              {sponsor.banner_image_url ? (
-                <img
-                  src={sponsor.banner_image_url}
-                  alt={sponsor.sponsor_name}
-                  className="w-full h-48 object-cover"
-                />
-              ) : (
-                <div className="bg-gradient-to-r from-blue-500 to-purple-500 p-12 text-center">
-                  <div className="text-white text-2xl font-bold">{sponsor.sponsor_name}</div>
-                </div>
-              )}
-            </a>
-          </div>
-        )}
+        {/* Ad Banner - COUNTRY_HOME placement for exam pages */}
+        <AdBanner
+          placement="COUNTRY_HOME"
+          country_id={examData.country.id}
+          exam_system_id={examData.exam.id}
+          className="mb-12 max-w-4xl mx-auto"
+        />
 
         {/* Subject Grid */}
         {loading ? (

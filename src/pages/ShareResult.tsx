@@ -131,7 +131,7 @@ export function ShareResult() {
       <SEOHead
         title={`I scored ${result.percentage}% on ${result.topic_name} | StartSprint`}
         description={`${result.correct_count}/${totalQuestions} correct • Time: ${formatDuration(result.duration_seconds)} • Can you beat my score?`}
-        ogImage={ogImageUrl}
+        image={ogImageUrl}
         url={shareUrl}
       />
 

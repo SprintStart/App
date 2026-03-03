@@ -4,6 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuizDraft } from '../../hooks/useQuizDraft';
 import { uploadQuestionImage, deleteQuestionImage } from '../../lib/imageUpload';
 import { PublishDestinationPicker, type PublishDestination } from './PublishDestinationPicker';
+import { getGlobalCategories, type GlobalCategory } from '../../lib/globalCategories';
 import {
   CheckCircle,
   ChevronRight,
@@ -1642,37 +1643,69 @@ export function CreateQuizWizard() {
 
         {step === 1 && (
           <div className="space-y-6">
-            <div>
-              <h2 className="text-xl font-semibold text-gray-900 mb-4">Select Subject</h2>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                {allSubjects.map((subject) => (
-                  <button
-                    key={subject.id}
-                    onClick={() => {
-                      const isCustom = subject.id.startsWith('custom-');
-                      setSelectedSubjectId(isCustom ? 'other' : subject.id);
-                      setSelectedSubjectName(subject.name);
-                      setStep(2);
-                    }}
-                    className={`p-4 border-2 rounded-lg text-left transition ${
-                      selectedSubjectId === subject.id
-                        ? 'border-blue-600 bg-blue-50'
-                        : 'border-gray-200 hover:border-blue-300'
-                    }`}
-                  >
-                    <div className="font-semibold text-gray-900">{subject.name}</div>
-                  </button>
-                ))}
-                <button
-                  onClick={() => setCreatingSubject(true)}
-                  className="p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-blue-400 transition flex items-center justify-center gap-2"
-                >
-                  <Plus className="w-5 h-5" />
-                  <span>New Subject</span>
-                </button>
+            {publishDestination?.type === 'global' ? (
+              // Global Categories Flow
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 mb-2">Select Global Category</h2>
+                <p className="text-sm text-gray-600 mb-4">
+                  Global quizzes are non-curriculum-based tests designed to build skills, reasoning ability, career readiness, and general knowledge.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {getGlobalCategories().map((category) => (
+                    <button
+                      key={category.id}
+                      onClick={() => {
+                        setSelectedSubjectId(category.id);
+                        setSelectedSubjectName(category.name);
+                        setStep(2);
+                      }}
+                      className={`p-5 border-2 rounded-lg text-left transition ${
+                        selectedSubjectId === category.id
+                          ? 'border-blue-600 bg-blue-50'
+                          : 'border-gray-200 hover:border-blue-300'
+                      }`}
+                    >
+                      <div className="font-semibold text-gray-900 mb-2">{category.name}</div>
+                      <div className="text-sm text-gray-600">{category.description}</div>
+                    </button>
+                  ))}
+                </div>
               </div>
+            ) : (
+              // Curriculum Subjects Flow (for Country/Exam and School)
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 mb-4">Select Subject</h2>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                  {allSubjects.map((subject) => (
+                    <button
+                      key={subject.id}
+                      onClick={() => {
+                        const isCustom = subject.id.startsWith('custom-');
+                        setSelectedSubjectId(isCustom ? 'other' : subject.id);
+                        setSelectedSubjectName(subject.name);
+                        setStep(2);
+                      }}
+                      className={`p-4 border-2 rounded-lg text-left transition ${
+                        selectedSubjectId === subject.id
+                          ? 'border-blue-600 bg-blue-50'
+                          : 'border-gray-200 hover:border-blue-300'
+                      }`}
+                    >
+                      <div className="font-semibold text-gray-900">{subject.name}</div>
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setCreatingSubject(true)}
+                    className="p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-blue-400 transition flex items-center justify-center gap-2"
+                  >
+                    <Plus className="w-5 h-5" />
+                    <span>New Subject</span>
+                  </button>
+                </div>
+              </div>
+            )}
 
-              {creatingSubject && (
+            {creatingSubject && (
                 <div className="mt-4 p-4 bg-gray-50 rounded-lg">
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     New Subject Name
@@ -1703,7 +1736,6 @@ export function CreateQuizWizard() {
                   </div>
                 </div>
               )}
-            </div>
 
             {/* Back button to Destination step */}
             <div className="mt-6 flex justify-start">
